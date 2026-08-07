@@ -124,11 +124,13 @@ function g3_orch_db(array $selectQueue = [], ?Closure $onInsert = null, ?array $
 {
     $log = new stdClass;
     $log->selects = [];
+    $log->bindings = [];
     $log->inserts = [];
 
     DB::shouldReceive('connection')->andReturnSelf();
-    DB::shouldReceive('select')->andReturnUsing(static function (string $sql) use ($log, &$selectQueue): array {
+    DB::shouldReceive('select')->andReturnUsing(static function (string $sql, array $bindings = []) use ($log, &$selectQueue): array {
         $log->selects[] = $sql;
+        $log->bindings[] = $bindings;
 
         return array_shift($selectQueue) ?? [];
     });
@@ -352,7 +354,7 @@ it('ignores sorted tables that have no table config', function (): void {
     expect(array_map(static fn (TableRunResultData $t): string => $t->tableName, $result->tables))->toBe(['users']);
 });
 
-it('reads all chunks with advancing offsets and reports totals', function (): void {
+it('reads all chunks with an advancing keyset cursor and reports totals', function (): void {
     $log = g3_orch_db([
         [(object) ['id' => 1], (object) ['id' => 2]],
         [(object) ['id' => 3]],
@@ -365,9 +367,10 @@ it('reads all chunks with advancing offsets and reports totals', function (): vo
     );
 
     expect($log->selects)->toBe([
-        'SELECT * FROM `users` LIMIT 2 OFFSET 0',
-        'SELECT * FROM `users` LIMIT 2 OFFSET 2',
+        'SELECT * FROM `users` ORDER BY `id` ASC LIMIT 2',
+        'SELECT * FROM `users` WHERE (`id`) > (?) ORDER BY `id` ASC LIMIT 2',
     ])
+        ->and($log->bindings)->toBe([[], [2]])
         ->and($result->totalRows)->toBe(3)
         ->and($result->skippedRows)->toBe(0)
         ->and($result->success)->toBeTrue()
@@ -583,7 +586,7 @@ it('omits a generated source column that is unknown on a live target', function 
     );
 
     expect($result->tables[0]->notes)->toBe(['Generated columns not copied: g'])
-        ->and($log->selects[0])->toBe('SELECT `id` FROM `users` LIMIT 1000 OFFSET 0')
+        ->and($log->selects[0])->toBe('SELECT `id` FROM `users` ORDER BY `id` ASC LIMIT 1000')
         ->and(g3_orch_events('table_column_note'))->toBe([
             ['level' => 'warning', 'event' => 'table_column_note', 'table' => 'users', 'note' => 'Generated columns not copied: g'],
         ]);
@@ -666,10 +669,10 @@ it('selects quoted columns and drops excluded values from the inserted rows', fu
     expect($log->selects[0])->toBe($sql)
         ->and($log->inserts[0])->toBe([['id' => 1]]);
 })->with([
-    'mysql' => [DatabaseConnectionType::Mysql, 'SELECT `id`, `nick` FROM `users` LIMIT 1000 OFFSET 0'],
-    'mariadb' => [DatabaseConnectionType::MariaDB, 'SELECT `id`, `nick` FROM `users` LIMIT 1000 OFFSET 0'],
+    'mysql' => [DatabaseConnectionType::Mysql, 'SELECT `id`, `nick` FROM `users` ORDER BY `id` ASC LIMIT 1000'],
+    'mariadb' => [DatabaseConnectionType::MariaDB, 'SELECT `id`, `nick` FROM `users` ORDER BY `id` ASC LIMIT 1000'],
     'sqlsrv' => [DatabaseConnectionType::SqlServer, 'SELECT [id], [nick] FROM [users] ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 1000 ROWS ONLY'],
-    'pgsql' => [DatabaseConnectionType::PostgreSQL, 'SELECT "id", "nick" FROM "users" LIMIT 1000 OFFSET 0'],
+    'pgsql' => [DatabaseConnectionType::PostgreSQL, 'SELECT "id", "nick" FROM "users" ORDER BY "id" ASC LIMIT 1000'],
 ]);
 
 it('applies key remapping only when both the service and the config are present', function (bool $withService, bool $withConfig, array $expectedRow): void {
@@ -927,7 +930,7 @@ it('tells the dump whether to emit the schema', function (bool $skipSchema): voi
     expect($result->success)->toBeTrue();
 })->with(['skip schema' => [true], 'emit schema' => [false]]);
 
-it('dumps every chunk with advancing offsets and purges the source connection', function (): void {
+it('dumps every chunk with an advancing keyset cursor and purges the source connection', function (): void {
     $sink = g3_orch_dump_sink();
     $sink->shouldReceive('writeRows')->once()->with('users', [['id' => 1]])->ordered();
     $sink->shouldReceive('writeRows')->once()->with('users', [['id' => 2]])->ordered();
@@ -941,10 +944,11 @@ it('dumps every chunk with advancing offsets and purges the source connection', 
     );
 
     expect($log->selects)->toBe([
-        'SELECT * FROM `users` LIMIT 1 OFFSET 0',
-        'SELECT * FROM `users` LIMIT 1 OFFSET 1',
-        'SELECT * FROM `users` LIMIT 1 OFFSET 2',
+        'SELECT * FROM `users` ORDER BY `id` ASC LIMIT 1',
+        'SELECT * FROM `users` WHERE (`id`) > (?) ORDER BY `id` ASC LIMIT 1',
+        'SELECT * FROM `users` WHERE (`id`) > (?) ORDER BY `id` ASC LIMIT 1',
     ])
+        ->and($log->bindings)->toBe([[], [1], [2]])
         ->and($result->success)->toBeTrue()
         ->and($result->tables[0]->rowsTransferred)->toBe(2);
 });
@@ -961,7 +965,7 @@ it('stops dumping after a short chunk', function (): void {
         dumpSink: $sink,
     );
 
-    expect($log->selects)->toBe(['SELECT * FROM `users` LIMIT 2 OFFSET 0'])
+    expect($log->selects)->toBe(['SELECT * FROM `users` ORDER BY `id` ASC LIMIT 2'])
         ->and($result->tables[0]->rowsTransferred)->toBe(1);
 });
 
