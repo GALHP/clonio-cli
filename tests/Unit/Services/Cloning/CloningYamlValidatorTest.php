@@ -1131,3 +1131,25 @@ it('rejects an invalid remapping use value', function (mixed $use): void {
     'integer' => [123],
     'unknown string' => ['sequential'],
 ]);
+
+it('accepts a valid regex table key', function (): void {
+    $config = makeValidConfig();
+    $config['tables'] = [
+        '/^application_logs_archive_\d{2}_\d{4}$/' => ['rows' => ['strategy' => 'last', 'limit' => 1]],
+    ];
+
+    $errors = (new CloningYamlValidator)->validate($config);
+
+    expect($errors)->toBe([]);
+});
+
+it('flags an invalid regex table key', function (): void {
+    $config = makeValidConfig();
+    $config['tables'] = [
+        '/^app_logs_(unterminated/' => ['rows' => ['strategy' => 'full']],
+    ];
+
+    $errors = (new CloningYamlValidator)->validate($config);
+
+    expect($errors)->toContain("Table '/^app_logs_(unterminated/': invalid regex pattern");
+});
