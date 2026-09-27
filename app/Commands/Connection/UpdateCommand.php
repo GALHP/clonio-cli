@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace App\Commands\Connection;
 
+use App\Commands\Connection\Concerns\PromptsForSsl;
 use App\Data\ConnectionData;
+use App\Data\SslConfig;
 use App\Enums\DatabaseConnectionType;
 use App\Enums\ExitCode;
+use App\Enums\SslMode;
 use App\Services\Config\ConfigService;
 use Illuminate\Support\Facades\Crypt;
 use LaravelZero\Framework\Commands\Command;
@@ -14,6 +17,8 @@ use RuntimeException;
 
 class UpdateCommand extends Command
 {
+    use PromptsForSsl;
+
     /**
      * @var string
      */
@@ -42,6 +47,22 @@ class UpdateCommand extends Command
 
         $updated = $this->promptForFields($current);
 
+        // Only re-check the certificate files on disk when the ssl block actually changed
+        // (M4): an unrelated field update (e.g. password) shouldn't fail because a
+        // previously-accepted certificate path is now missing.
+        $sslChanged = $current->ssl?->toArray() !== $updated->ssl?->toArray();
+        $sslErrors = $this->sslErrors($updated->type, $updated->ssl, checkFiles: $sslChanged);
+
+        if ($sslErrors !== []) {
+            foreach ($sslErrors as $sslError) {
+                $this->error($sslError);
+            }
+
+            return ExitCode::ValidationError->value;
+        }
+
+        $this->warnIfKeyExposed($updated->ssl);
+
         $newName = $updated->name;
         $nameChanged = $newName !== $name;
 
@@ -53,7 +74,9 @@ class UpdateCommand extends Command
 
         $this->showDiff($current, $updated);
 
-        if (! $this->confirm('Save changes?', true)) {
+        $save = $this->input->isInteractive() ? $this->confirm('Save changes?', true) : true;
+
+        if (! $save) {
             $this->info('No changes saved.');
 
             return ExitCode::Success->value;
@@ -98,6 +121,12 @@ class UpdateCommand extends Command
             return $names[0];
         }
 
+        if (! $this->input->isInteractive()) {
+            $this->error('Multiple connections found; pass the connection name: clonio connection:update <name>.');
+
+            return null;
+        }
+
         $selected = $this->choice('Which connection do you want to update?', $names);
 
         return is_string($selected) ? $selected : $names[0];
@@ -109,12 +138,18 @@ class UpdateCommand extends Command
 
         $typeValues = DatabaseConnectionType::values();
         $currentTypeIndex = array_search($current->type->value, $typeValues, true);
-        $selectedDriver = $this->choice(
-            'Database driver',
-            $typeValues,
-            $currentTypeIndex !== false ? (int) $currentTypeIndex : 0,
-        );
-        $newTypeValue = is_string($selectedDriver) ? $selectedDriver : $current->type->value;
+
+        if ($this->input->isInteractive()) {
+            $selectedDriver = $this->choice(
+                'Database driver',
+                $typeValues,
+                $currentTypeIndex !== false ? (int) $currentTypeIndex : 0,
+            );
+            $newTypeValue = is_string($selectedDriver) ? $selectedDriver : $current->type->value;
+        } else {
+            $newTypeValue = $current->type->value;
+        }
+
         $newType = DatabaseConnectionType::from($newTypeValue);
         $typeChanged = $newType !== $current->type;
 
@@ -156,15 +191,11 @@ class UpdateCommand extends Command
             $password = Crypt::encryptString($passwordInput);
         }
 
-        $isProduction = $this->confirm('Is this a production connection?', $current->isProduction);
+        $ssl = $newType->requiresNetworkConfig() ? $this->promptForSsl($current, $newType) : null;
 
-        $trustServerCertificate = false;
-        if ($newType === DatabaseConnectionType::SqlServer) {
-            $trustServerCertificate = $this->confirm(
-                'Trust server certificate? (required for self-signed certs)',
-                $typeChanged ? false : $current->trustServerCertificate,
-            );
-        }
+        $isProduction = $this->input->isInteractive()
+            ? $this->confirm('Is this a production connection?', $current->isProduction)
+            : $current->isProduction;
 
         return new ConnectionData(
             name: $newName,
@@ -176,12 +207,44 @@ class UpdateCommand extends Command
             username: $username !== null && $username !== '' ? $username : null,
             password: $password,
             isProduction: $isProduction,
-            trustServerCertificate: $trustServerCertificate,
+            dialect: $current->dialect,
+            ssl: $ssl,
         );
+    }
+
+    /**
+     * Pre-selects the stored mode. Connections without ssl keep "Driver default", except a
+     * legacy sqlsrv trust flag (migrated to require) and a switch from sqlite/dump (new default require).
+     */
+    private function promptForSsl(ConnectionData $current, DatabaseConnectionType $newType): ?SslConfig
+    {
+        $currentSsl = $current->type->requiresNetworkConfig() ? $current->ssl : null;
+
+        $defaultMode = match (true) {
+            $currentSsl instanceof SslConfig => $currentSsl->mode,
+            $current->trustServerCertificate, ! $current->type->requiresNetworkConfig() => SslMode::Require,
+            default => null,
+        };
+
+        $mode = $this->askSslMode($defaultMode);
+
+        if (! $mode instanceof SslMode) {
+            return null;
+        }
+
+        if ($newType === DatabaseConnectionType::SqlServer && $currentSsl?->hasCertificateFiles() === true) {
+            $this->info('Certificate paths are not supported for sqlsrv and were removed.');
+        }
+
+        return $this->askSslFiles($newType, $mode, $currentSsl);
     }
 
     private function askString(string $question, string $default): string
     {
+        if (! $this->input->isInteractive()) {
+            return $default;
+        }
+
         $answer = $this->ask($question, $default !== '' ? $default : null);
 
         return is_string($answer) ? $answer : $default;
@@ -212,6 +275,10 @@ class UpdateCommand extends Command
                 $old->trustServerCertificate ? 'true' : 'false',
                 $new->trustServerCertificate ? 'true' : 'false',
             ],
+            'ssl.mode' => [$old->ssl?->mode->value ?? 'default', $new->ssl?->mode->value ?? 'default'],
+            'ssl.ca' => [$old->ssl->ca ?? '', $new->ssl->ca ?? ''],
+            'ssl.cert' => [$old->ssl->cert ?? '', $new->ssl->cert ?? ''],
+            'ssl.key' => [$old->ssl->key ?? '', $new->ssl->key ?? ''],
         ];
 
         $changed = array_filter($fields, static fn (array $pair): bool => $pair[0] !== $pair[1]);
