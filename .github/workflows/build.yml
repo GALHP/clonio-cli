@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -33,14 +33,14 @@ jobs:
           coverage: xdebug
 
       - name: Cache Composer dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.composer/cache
           key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-
 
       - name: Rector cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /tmp/rector
           key: ${{ runner.os }}-rector-${{ hashFiles('composer.lock', 'rector.php') }}-v2
@@ -48,7 +48,7 @@ jobs:
       - run: mkdir -p /tmp/rector
 
       - name: PHPStan cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /tmp/phpstan
           key: ${{ runner.os }}-phpstan-${{ hashFiles('composer.lock', 'phpstan.neon') }}-v2
@@ -87,7 +87,7 @@ jobs:
       # mbregex is a separate SPC extension (not part of mbstring) that provides mb_ereg*
       # and mb_regex_encoding. mPDF checks for it at runtime and fails without it.
       # Adding it here makes SPC auto-pull the onig library via its lib-depends.
-      EXTENSIONS: ctype,curl,fileinfo,filter,gd,iconv,mbstring,mbregex,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,phar,readline,session,sqlite3,tokenizer,zlib
+      EXTENSIONS: ctype,curl,fileinfo,filter,gd,iconv,mbstring,mbregex,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,phar,readline,session,sqlite3,tokenizer,zlib,zip
       # Optional gd image libs. libpng + zlib are hard-deps and always built;
       # these add JPEG, WebP, and TrueType font support for mpdf-generated PDFs.
       # libavif intentionally omitted (heavy aom/dav1d toolchain, rarely used in PDFs).
@@ -107,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -131,7 +131,7 @@ jobs:
 
       - name: Cache SPC downloaded sources
         id: spc-downloads-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ./downloads
           # Key by matrix.output so Linux x86_64 and Linux aarch64 don't share a cache.
@@ -152,7 +152,7 @@ jobs:
 
       - name: Cache SPC build output
         id: spc-build-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ./buildroot
           key: spc-build-${{ matrix.output }}-php${{ env.PHP_VERSION }}-openssl${{ env.OPENSSL_VERSION }}-gd${{ env.GD_LIBS_SLUG }}-mbregex-cares${{ env.LIBCARES_VERSION }}
@@ -285,16 +285,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Build amd64 image into local daemon (for smoke)
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           platforms: linux/amd64
@@ -319,7 +319,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push'
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -327,7 +327,7 @@ jobs:
 
       - name: Derive tags and labels
         id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/clonio-dev/clonio
           # We control :latest explicitly — default flavor would tag every push :latest.
@@ -346,7 +346,7 @@ jobs:
             org.opencontainers.image.licenses=MIT
 
       - name: Build and push image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -366,7 +366,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
