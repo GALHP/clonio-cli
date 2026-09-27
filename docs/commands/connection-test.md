@@ -29,7 +29,7 @@ clonio connection:test --ci
 When a `name` argument is provided, only that connection is tested. The result is printed on one line:
 
 ```
-staging: OK (42ms)
+staging: OK (42ms, tls: require)
 ```
 
 If the connection fails:
@@ -43,16 +43,20 @@ staging: FAILED — Connection refused
 When no name is given, every connection in `clonio.json` is tested and the results are displayed in a table:
 
 ```
- ────────────┬────────────┬────────┬────────
-  Connection   Driver       Status   Time
- ────────────┼────────────┼────────┼────────
-  local        SQLite       OK       1ms
-  staging      MySQL        OK       38ms
-  prod         PostgreSQL   OK       55ms
- ────────────┴────────────┴────────┴────────
+ ────────────┬────────────┬─────────┬────────┬────────
+  Connection   Driver       TLS      Status   Time
+ ────────────┼────────────┼─────────┼────────┼────────
+  local        SQLite       —        OK       1ms
+  staging      MySQL        require  OK       38ms
+  prod         PostgreSQL   default  OK       55ms
+ ────────────┴────────────┴─────────┴────────┴────────
 
 All 3 connections OK.
 ```
+
+The `TLS` column shows the configured transport mode (`default`, `disable`, `require`, `verify`), matching `connection:list`. SQLite and Dump connections show `—` since they have no network transport.
+
+With `-v`, an additional `Cipher` column shows the negotiated TLS cipher for each successful MySQL/MariaDB/PostgreSQL connection. Encrypted SQL Server connections show `encrypted (cipher not reported by SQL Server)`. The column shows `—` when the connection is not encrypted or isn't a network connection. The cipher is only queried when it will actually be displayed, so no extra query runs without `-v`.
 
 A summary line is always printed regardless of `--ci` mode.
 
@@ -63,6 +67,17 @@ A summary line is always printed regardless of `--ci` mode.
 | SQLite | Checks that the database file exists, is readable, and is writable. No network connection is attempted. |
 | MySQL, MariaDB, PostgreSQL, SQL Server | Opens a real TCP connection using `PDO` and calls `getPdo()`. The connection is purged immediately after the test. |
 | Dump | No PDO. Verifies the current working directory is writable and prints `Dump connection "<name>" — dialect: <dialect>, target: <cwd>, encryption: AES-256\|none`. Exits with code `5` (`IoError`) if the directory is not writable. |
+
+### Transport security
+
+With `-v`, a successful MySQL/MariaDB/PostgreSQL test also prints the negotiated cipher (`TLS cipher: TLS_AES_256_GCM_SHA384`). SQL Server does not expose the cipher over T-SQL, only whether the session is encrypted, so a successful encrypted SQL Server test instead prints `TLS cipher: encrypted (cipher not reported by SQL Server)`; the line is omitted when the session is not encrypted, exactly as for the other drivers. This is the only query sent beyond the handshake.
+
+TLS failures include a hint, for example:
+
+```
+staging: FAILED — SQLSTATE[HY000] [3159] Connections using insecure transport are prohibited while --require_secure_transport=ON.
+The server requires TLS. Run "clonio connection:update staging" and set transport security to "require" or "verify".
+```
 
 ### Password decryption
 
