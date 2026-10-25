@@ -1,17 +1,24 @@
-up:
-	docker compose up -d
+# ──────────────────────────────────────────────────────────────────────────────
+# Dev environment — `dev` stage of the Dockerfile via compose.yaml. Every target
+# uses `run --rm` (not `exec`) so the entrypoint maps the container user to the
+# owner of the repository; no long-running container needed.
+# ──────────────────────────────────────────────────────────────────────────────
 
-down:
-	docker compose down
+.PHONY: dev-build dev-install dev-shell dev-test dev-lint
 
-restart: down up
+DEV_RUN = docker compose run --rm
 
-bash:
-	docker compose exec php bash
+dev-build:
+	docker compose build php
 
-test:
-	docker compose exec php bash -c 'XDEBUG_MODE=coverage composer test'
+dev-install:
+	$(DEV_RUN) php composer install
 
-check:
-	docker compose exec php bash -c 'composer lint && composer test:types'
+dev-shell:
+	$(DEV_RUN) php sh
 
+dev-test:
+	$(DEV_RUN) -e XDEBUG_MODE=coverage php composer test
+
+dev-lint:
+	$(DEV_RUN) php composer lint

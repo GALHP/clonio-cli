@@ -1,12 +1,15 @@
+# Local development environment — no PHP toolchain needed on the host.
+# Image: `dev` stage of the Dockerfile. Usage: `make dev-*` (see `make help`)
+# or `docker compose run --rm php <command>`.
 services:
   php:
-    image: "wodby/php:8.5-dev-macos"
-    environment:
-      PHP_EXTENSIONS_DISABLE: 'xhprof,spx'
-    healthcheck:
-      test: ["CMD", "php", "-v"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    build:
+      context: .
+      target: dev
+    image: clonio:dev
     volumes:
-      - .:/var/www/html
+      - .:/app
+      - composer-cache:/var/cache/composer
+
+volumes:
+  composer-cache:

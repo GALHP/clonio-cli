@@ -234,7 +234,8 @@ it('returns an IO error when a new .env cannot be written', function (): void {
     // No APP_KEY anywhere -> the command tries to create a fresh .env.
     // Forcing Storage::put() to return false (as it would on a failed write)
     // bubbles up as a RuntimeException and is reported as an IO error. We mock
-    // rather than chmod because chmod is a no-op under root (e.g. in Docker).
+    // rather than chmod because root ignores permission bits, and the dev
+    // container runs as root under rootless Docker/Podman.
     putenv('APP_KEY');
     unset($_ENV['APP_KEY'], $_SERVER['APP_KEY']);
 
@@ -249,7 +250,8 @@ it('returns an IO error when a new .env cannot be written', function (): void {
 it('returns an IO error when an existing .env cannot be overwritten', function (): void {
     // An existing .env without an APP_KEY would normally be appended to, but
     // forcing Storage::put() to return false makes the rewrite fail. We mock
-    // rather than chmod because chmod is a no-op under root (e.g. in Docker).
+    // rather than chmod because root ignores permission bits, and the dev
+    // container runs as root under rootless Docker/Podman.
     putenv('APP_KEY');
     unset($_ENV['APP_KEY'], $_SERVER['APP_KEY']);
 
