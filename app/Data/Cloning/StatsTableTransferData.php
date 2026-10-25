@@ -58,12 +58,12 @@ final class StatsTableTransferData
     }
 
     /**
-     * Estimated wall-clock seconds until this table finishes, from the latest
+     * Estimated wall-clock seconds until this table finishes, from the smoothed
      * loop pace × outstanding rows. Null while the total or the pace is unknown.
      */
     public ?float $estimatedSecondsRemaining {
         get {
-            $pace = $this->loopAggregate->latestPace;
+            $pace = $this->loopAggregate->smoothedPace;
 
             return $this->hasKnownTotal && $pace !== null
                 ? $pace * $this->rowsRemaining

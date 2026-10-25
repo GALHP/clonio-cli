@@ -11,6 +11,9 @@ namespace App\Data\Cloning;
  */
 final class StatsPhaseAggregateData
 {
+    /** Weight of the newest sample in `smoothedPace`. */
+    private const float SMOOTHING = 0.2;
+
     public private(set) int $count = 0;
 
     public private(set) float $sum = 0.0;
@@ -24,6 +27,13 @@ final class StatsPhaseAggregateData
     public private(set) ?int $lastRows = null;
 
     public private(set) int $rowsProcessed = 0;
+
+    /**
+     * Exponential moving average of the per-sample seconds per row, or null
+     * before the first sample with rows. Steadier than `latestPace` for an
+     * ETA, yet still follows a pace that drifts over the run.
+     */
+    public private(set) ?float $smoothedPace = null;
 
     /** Mean seconds per sample, or null when no sample has been recorded. */
     public ?float $averageSeconds {
@@ -81,5 +91,12 @@ final class StatsPhaseAggregateData
         $this->last = $seconds;
         $this->lastRows = $rows;
         $this->rowsProcessed += max(0, $rows);
+
+        if ($rows > 0) {
+            $pace = $seconds / $rows;
+            $this->smoothedPace = $this->smoothedPace === null
+                ? $pace
+                : self::SMOOTHING * $pace + (1 - self::SMOOTHING) * $this->smoothedPace;
+        }
     }
 }
