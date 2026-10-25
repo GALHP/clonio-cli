@@ -389,8 +389,6 @@ class CloningRunOrchestrator
             $stats->recordCountingRows(microtime(true) - $tCount);
         }
 
-        $loopIndex = 0;
-
         try {
             if ($options->disableForeignKeyChecks) {
                 $stats->setStatus(TableRunPhase::DisableFkChecks);
@@ -482,7 +480,6 @@ class CloningRunOrchestrator
                 $overallSeconds = microtime(true) - $tOverall;
 
                 $stats->recordLoop(new StatsLoopData(
-                    loopIndex: $loopIndex,
                     chunkRows: $chunkRowsAttempted,
                     selectSeconds: $selectSeconds,
                     transformSeconds: $transformSeconds,
@@ -490,13 +487,11 @@ class CloningRunOrchestrator
                     overallSeconds: $overallSeconds,
                     rowsDone: $loopRowsDone,
                     rowsSkipped: $loopRowsSkipped,
-                    totalRows: $stats->totalRows,
                 ));
 
                 $reportProgress();
 
                 $offset += count($chunk);
-                $loopIndex++;
             } while (count($chunk) === $chunkSize);
 
             if ($rows === 0 && $skipped > 0) {

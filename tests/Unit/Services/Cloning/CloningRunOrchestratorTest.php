@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use App\Data\Cloning\CloningConfigData;
 use App\Data\Cloning\CloningOptionsData;
-use App\Data\Cloning\StatsLoopData;
 use App\Data\Cloning\StatsTableTransferData;
 use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Cloning\TableRowConfigData;
@@ -1032,6 +1031,7 @@ it('reports per-table timings and throughput through onTableProgress', function 
 
     /** @var list<StatsTableTransferData> $events */
     $events = [];
+    $rowsAtEvent = [];
     $terminal = [];
     $orchestrator = makeOrchestrator();
     $orchestrator->run(
@@ -1046,8 +1046,9 @@ it('reports per-table timings and throughput through onTableProgress', function 
             $terminal[] = $status;
         },
         trackRowTotals: true,
-        onTableProgress: static function (string $tbl, StatsTableTransferData $stats) use (&$events): void {
+        onTableProgress: static function (string $tbl, StatsTableTransferData $stats) use (&$events, &$rowsAtEvent): void {
             $events[] = $stats;
+            $rowsAtEvent[] = $stats->rowsProcessed;
         },
     );
 
@@ -1065,31 +1066,13 @@ it('reports per-table timings and throughput through onTableProgress', function 
     expect($timings->rowsRemaining)->toBe(0);
     expect($timings->percentComplete)->toBe(100.0);
 
-    expect($timings->loops->count())->toBe(2);
-    expect($timings->statsOverTime->count())->toBe(2);
+    // Cumulative progress read at emit time: before the first chunk, then per chunk.
+    expect($rowsAtEvent)->toBe([0, 2, 3]);
 
-    /** @var StatsLoopData $loop0 */
-    $loop0 = $timings->loops->get(0);
-    /** @var StatsLoopData $loop1 */
-    $loop1 = $timings->loops->get(1);
-    expect($loop0->loopIndex)->toBe(0);
-    expect($loop0->chunkRows)->toBe(2);
-    expect($loop0->rowsDone)->toBe(2);
-    expect($loop0->rowsSkipped)->toBe(0);
-    expect($loop0->totalRows)->toBe(3);
-    expect($loop1->loopIndex)->toBe(1);
-    expect($loop1->chunkRows)->toBe(1);
-    expect($loop1->rowsDone)->toBe(1);
-
-    $snap0 = $timings->statsOverTime->get(0);
-    $snap1 = $timings->statsOverTime->get(1);
-    expect($snap0->rowsDoneCumulative)->toBe(2);
-    expect($snap1->rowsDoneCumulative)->toBe(3);
-    expect($snap0->loopsRecorded)->toBe(1);
-    expect($snap1->loopsRecorded)->toBe(2);
-    expect($snap1->percentComplete)->toBe(100.0);
-    // Snapshot holds immutable scalars captured at record time, unaffected by later loops.
-    expect($snap0->insertPacePerMillion)->not->toBeNull();
+    $loopAgg = $timings->aggregate(TableRunPhase::Loop);
+    expect($loopAgg->count)->toBe(2);
+    expect($loopAgg->rowsProcessed)->toBe(3);
+    expect($loopAgg->lastRows)->toBe(1);
 
     $insertAgg = $timings->aggregate(TableRunPhase::Insert);
     expect($insertAgg->count)->toBe(2);

@@ -1192,7 +1192,7 @@ class RunCommand extends Command
 
     private function renderTimingSummary(OutputInterface $sink, StatsTableTransferData $timings): void
     {
-        if ($timings->loops->isEmpty()) {
+        if ($timings->loopAggregate->count === 0) {
             return;
         }
 

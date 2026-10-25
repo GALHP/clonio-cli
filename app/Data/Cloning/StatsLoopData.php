@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace App\Data\Cloning;
 
 /**
- * Snapshot of a single chunk-loop iteration inside `transferTable()`.
+ * Timings of a single chunk-loop iteration inside `transferTable()`, folded
+ * into `StatsTableTransferData::recordLoop()` and not kept afterwards.
  *
  * `rowsDone` and `rowsSkipped` count rows for **this loop only**, not
  * cumulative — inspect the parent `StatsTableTransferData` for
@@ -14,7 +15,6 @@ namespace App\Data\Cloning;
 final readonly class StatsLoopData
 {
     public function __construct(
-        public int $loopIndex,
         public int $chunkRows,
         public float $selectSeconds,
         public float $transformSeconds,
@@ -22,6 +22,5 @@ final readonly class StatsLoopData
         public float $overallSeconds,
         public int $rowsDone,
         public int $rowsSkipped,
-        public int $totalRows,
     ) {}
 }

@@ -4,16 +4,13 @@ declare(strict_types=1);
 
 namespace App\Data\Cloning;
 
-use Illuminate\Support\Collection;
-
 /**
  * Per-table timing container. One instance travels through every chunk
  * loop of a single `transferTable()` invocation.
  *
- * Loops are pushed via `recordLoop(StatsLoopData)`; per-phase running
- * aggregates (`selectAggregate` / `transformAggregate` / `insertAggregate`)
- * are updated in O(1) so the derived throughput figures never re-scan
- * `$loops`.
+ * Each chunk is folded in via `recordLoop(StatsLoopData)` into O(1) running
+ * per-phase aggregates; no per-chunk history is kept, so memory stays flat
+ * however many chunks a table needs.
  */
 final class StatsTableTransferData
 {
@@ -25,12 +22,6 @@ final class StatsTableTransferData
     public private(set) ?float $disableFkSeconds = null;
 
     public private(set) ?float $clearTableSeconds = null;
-
-    /** @var Collection<int, StatsLoopData> */
-    public private(set) Collection $loops;
-
-    /** @var Collection<int, StatsLoopSnapshotData> */
-    public private(set) Collection $statsOverTime;
 
     public private(set) int $totalRows = 0;
 
@@ -85,8 +76,6 @@ final class StatsTableTransferData
 
     public function __construct()
     {
-        $this->loops = new Collection;
-        $this->statsOverTime = new Collection;
         $this->selectAggregate = new StatsPhaseAggregateData;
         $this->transformAggregate = new StatsPhaseAggregateData;
         $this->insertAggregate = new StatsPhaseAggregateData;
@@ -118,14 +107,9 @@ final class StatsTableTransferData
         $this->clearTableSeconds = $seconds;
     }
 
-    /**
-     * Append a completed chunk loop, update running aggregates in O(1),
-     * and append a stats-over-time snapshot.
-     */
+    /** Fold a completed chunk loop into the running aggregates in O(1). */
     public function recordLoop(StatsLoopData $loop): void
     {
-        $this->loops->push($loop);
-
         $this->selectAggregate->record($loop->selectSeconds, $loop->chunkRows);
         $this->transformAggregate->record($loop->transformSeconds, $loop->chunkRows);
         $this->insertAggregate->record($loop->insertSeconds, $loop->chunkRows);
@@ -133,18 +117,6 @@ final class StatsTableTransferData
 
         $this->rowsDone += $loop->rowsDone;
         $this->rowsSkipped += $loop->rowsSkipped;
-
-        $this->statsOverTime->push(new StatsLoopSnapshotData(
-            loopIndex: $loop->loopIndex,
-            loopsRecorded: $this->loops->count(),
-            rowsDoneCumulative: $this->rowsDone,
-            rowsSkippedCumulative: $this->rowsSkipped,
-            percentComplete: $this->percentComplete,
-            selectPacePerMillion: $this->selectAggregate->pacePerMillion,
-            transformPacePerMillion: $this->transformAggregate->pacePerMillion,
-            insertPacePerMillion: $this->insertAggregate->pacePerMillion,
-            loopPacePerMillion: $this->loopAggregate->pacePerMillion,
-        ));
     }
 
     public function aggregate(TableRunPhase $phase): StatsPhaseAggregateData

@@ -33,7 +33,6 @@ it('estimates remaining time from the latest loop pace', function (): void {
     $stats = new StatsTableTransferData;
     $stats->setTotalRows(100);
     $stats->recordLoop(new StatsLoopData(
-        loopIndex: 0,
         chunkRows: 10,
         selectSeconds: 0.2,
         transformSeconds: 0.1,
@@ -41,7 +40,6 @@ it('estimates remaining time from the latest loop pace', function (): void {
         overallSeconds: 1.0,
         rowsDone: 10,
         rowsSkipped: 0,
-        totalRows: 100,
     ));
 
     // 90 rows remaining × (1.0s / 10 rows) = 9.0s.
