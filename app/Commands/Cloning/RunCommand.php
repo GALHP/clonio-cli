@@ -23,6 +23,7 @@ use App\Enums\DatabaseConnectionType;
 use App\Enums\ExitCode;
 use App\Exceptions\KeyRemappingExhaustedException;
 use App\Logging\AuditBuffer;
+use App\Logging\ConsoleOutputHandler;
 use App\Services\Audit\AuditDeliveryService;
 use App\Services\Audit\AuditLogBuilder;
 use App\Services\Audit\AuditLogRenderer;
@@ -49,13 +50,18 @@ use App\Services\Schema\SchemaInspector;
 use App\Services\SqlDump\DumpArchiver;
 use App\Services\SqlDump\DumpDialectFactory;
 use App\Services\SqlDump\SqlDumpService;
+use Closure;
 use DateTimeImmutable;
 use DateTimeZone;
+use Illuminate\Log\Logger;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use LaravelZero\Framework\Commands\Command;
+use Monolog\Handler\StreamHandler;
+use Monolog\Level;
+use Monolog\Logger as Monolog;
 use RuntimeException;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -122,17 +128,9 @@ class RunCommand extends Command
             && $out instanceof ConsoleOutput;
 
         // Map Symfony verbosity to stderr log threshold so `-v` / `-vv` surface
-        // info / debug events on stderr when piped. When the bars are live they own
-        // the terminal, so the stderr stream is silenced to avoid corrupting them —
-        // skips/failures still surface as result lines and in the final summary.
-        // (Set before the channel is first resolved, so it actually takes effect.)
-        $stderrLevel = match (true) {
-            $showProgress => 'emergency',
-            $isVeryVerbose => 'debug',
-            $isVerbose => 'info',
-            $ci => 'error',
-            default => 'warning',
-        };
+        // info / debug events on stderr without needing a separate live-output path.
+        // While live bars run, redirectLogsTo() moves warnings into the log section.
+        $stderrLevel = $isVeryVerbose ? 'debug' : ($isVerbose ? 'info' : ($ci ? 'error' : 'warning'));
         config(['logging.channels.stderr.level' => $stderrLevel]);
 
         $step = new VerboseStepRenderer($this->output, $ci);
@@ -474,6 +472,9 @@ class RunCommand extends Command
         $progress = $showProgress
             ? CloningProgressDisplay::forConsole($out, phaseDetail: $isVeryVerbose)
             : null;
+        $restoreLogs = $progress instanceof CloningProgressDisplay
+            ? $this->redirectLogsTo($progress->log)
+            : null;
 
         // Live stats of the table currently transferring, kept for its terminal
         // event (the `-vvv` timing summary) and then reset.
@@ -591,6 +592,10 @@ class RunCommand extends Command
         );
 
         $progress?->finish();
+
+        if ($restoreLogs instanceof Closure) {
+            $restoreLogs();
+        }
 
         $finishedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 
@@ -1068,6 +1073,43 @@ class RunCommand extends Command
         }
 
         return $result;
+    }
+
+    /**
+     * While live bars own the terminal, a raw stderr write would corrupt them:
+     * silence the stderr log handlers and show warnings and errors in `$section`
+     * instead. Returns the callback that restores both.
+     *
+     * @return Closure(): void
+     */
+    private function redirectLogsTo(OutputInterface $section): Closure
+    {
+        $logger = Log::driver();
+        $monolog = $logger instanceof Logger ? $logger->getLogger() : $logger;
+
+        if (! $monolog instanceof Monolog) {
+            return static function (): void {};
+        }
+
+        /** @var list<array{StreamHandler, Level}> $silenced */
+        $silenced = [];
+
+        foreach ($monolog->getHandlers() as $handler) {
+            if ($handler instanceof StreamHandler && $handler->getUrl() === 'php://stderr') {
+                $silenced[] = [$handler, $handler->getLevel()];
+                $handler->setLevel(Level::Emergency);
+            }
+        }
+
+        $monolog->pushHandler(new ConsoleOutputHandler($section));
+
+        return static function () use ($monolog, $silenced): void {
+            $monolog->popHandler();
+
+            foreach ($silenced as [$handler, $level]) {
+                $handler->setLevel($level);
+            }
+        };
     }
 
     /**

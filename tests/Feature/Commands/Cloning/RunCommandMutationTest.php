@@ -5,6 +5,9 @@ declare(strict_types=1);
 use App\Commands\Cloning\RunCommand;
 use App\Data\Cloning\KeyRemappingConfigData;
 use App\Data\Cloning\RunResultData;
+use App\Data\Cloning\StatsLoopData;
+use App\Data\Cloning\StatsTableTransferData;
+use App\Data\Cloning\TableRunPhase;
 use App\Data\Cloning\TableRunResultData;
 use App\Data\Cloning\TableRunStatus;
 use App\Data\ConnectionData;
@@ -25,6 +28,9 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\ConsoleOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Output\StreamOutput;
 
 // ─── Helpers (prefixed g1_ to stay unique across the suite) ──────────────────
 
@@ -1354,4 +1360,63 @@ it('ignores a row limit for the full strategy in a dry run', function (): void {
         ."  Total                    5 rows across 1 tables\n"
         ."\n  No data will be transferred. Run without --dry-run to execute.\n\n"
     );
+});
+
+// ─── Live progress bars ───────────────────────────────────────────────────────
+
+it('drives live progress bars on a decorated console and logs above them', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $captured = [];
+    g1_bind(run: function (array $a) use (&$captured): RunResultData {
+        $captured = $a;
+        $a[12](4); // onStart
+        $a[10]('users'); // onTableStart
+
+        $stats = new StatsTableTransferData;
+        $stats->setStatus(TableRunPhase::Insert);
+        $stats->setTotalRows(10, estimated: true);
+        $stats->recordLoop(new StatsLoopData(10, 0.1, 0.1, 0.3, 0.5, 9, 1));
+        $a[14]('users', $stats); // onTableProgress
+
+        Log::warning('row_skipped', ['table' => 'users']);
+        $a[7]('users', TableRunStatus::Transferred, 9, 1, [new SkippedRow('users', 0, 0, null, 'dup')]);
+        $a[10]('orders');
+        $a[7]('orders', TableRunStatus::Failed, 0, 0, []);
+        $a[7]('ghost', TableRunStatus::NotFound, 0, 0, []);
+        $a[7]('broken', TableRunStatus::SkippedBySchemaFailure, 0, 0, []);
+
+        return g1_result();
+    });
+
+    // A real ConsoleOutput (sections need one), decorated, writing to memory.
+    $stream = fopen('php://memory', 'w+');
+    $output = new class($stream) extends ConsoleOutput
+    {
+        public function __construct(mixed $stream)
+        {
+            StreamOutput::__construct($stream, OutputInterface::VERBOSITY_VERBOSE, true);
+            $this->setErrorOutput(new StreamOutput($stream, OutputInterface::VERBOSITY_VERBOSE, true));
+        }
+    };
+
+    $command = app(RunCommand::class);
+    $command->setLaravel(app());
+    $code = $command->run(new ArrayInput(['file' => 't.yaml', '--target' => 'staging'], $command->getDefinition()), $output);
+
+    rewind($stream);
+    $screen = (string) preg_replace('/\e\[[0-9;]*[A-Za-z]/', '', (string) stream_get_contents($stream));
+
+    expect($code)->toBe(0)
+        ->and($captured[13])->toBeTrue() // trackRowTotals
+        ->and($screen)->toContain('users  [')
+        ->and($screen)->toContain('10/~10 (100%)')
+        ->and($screen)->toContain('WARNING: row_skipped {"table":"users"}')
+        ->and($screen)->toContain('  ✓  users  (9 rows, 1 skipped)')
+        ->and($screen)->toContain('     └ 1× dup')
+        ->and($screen)->toContain('  ✗  orders  — transfer failed')
+        ->and($screen)->toContain('  ?  ghost  — not found in source, skipped')
+        ->and($screen)->toContain('  S  broken  — schema replication failed, skipped')
+        ->and($screen)->toContain('tables  [')
+        ->and($screen)->toContain('4/4')
+        ->and($screen)->not->toContain('users ...');
 });
