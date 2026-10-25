@@ -965,7 +965,7 @@ it('uses keyset (seek) pagination instead of OFFSET when a primary key exists', 
     expect($queries[0]['bindings'])->toBe([]);
 
     // Second chunk: seek past the last fetched id via a bound row-value comparison.
-    expect($queries[1]['sql'])->toContain('WHERE (`id`) > (?)')->toContain('ORDER BY')
+    expect($queries[1]['sql'])->toContain('WHERE (`id` > ?)')->toContain('ORDER BY')
         ->not->toContain('OFFSET');
     expect($queries[1]['bindings'])->toBe([2]);
 });

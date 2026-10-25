@@ -368,7 +368,7 @@ it('reads all chunks with an advancing keyset cursor and reports totals', functi
 
     expect($log->selects)->toBe([
         'SELECT * FROM `users` ORDER BY `id` ASC LIMIT 2',
-        'SELECT * FROM `users` WHERE (`id`) > (?) ORDER BY `id` ASC LIMIT 2',
+        'SELECT * FROM `users` WHERE (`id` > ?) ORDER BY `id` ASC LIMIT 2',
     ])
         ->and($log->bindings)->toBe([[], [2]])
         ->and($result->totalRows)->toBe(3)
@@ -945,8 +945,8 @@ it('dumps every chunk with an advancing keyset cursor and purges the source conn
 
     expect($log->selects)->toBe([
         'SELECT * FROM `users` ORDER BY `id` ASC LIMIT 1',
-        'SELECT * FROM `users` WHERE (`id`) > (?) ORDER BY `id` ASC LIMIT 1',
-        'SELECT * FROM `users` WHERE (`id`) > (?) ORDER BY `id` ASC LIMIT 1',
+        'SELECT * FROM `users` WHERE (`id` > ?) ORDER BY `id` ASC LIMIT 1',
+        'SELECT * FROM `users` WHERE (`id` > ?) ORDER BY `id` ASC LIMIT 1',
     ])
         ->and($log->bindings)->toBe([[], [1], [2]])
         ->and($result->success)->toBeTrue()
@@ -986,4 +986,255 @@ it('reports a failed dump read as a failed table', function (): void {
         ->and($result->tables[0]->failureReason)->toBe('read failed')
         ->and($result->tables[0]->rowsSkipped)->toBe(0)
         ->and($result->skippedRows)->toBe(0);
+});
+
+// ─── Keyset pagination ────────────────────────────────────────────────────────
+
+function g3_keyset_schema(bool $sortNullable = false): DatabaseSchemaData
+{
+    return new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
+        new ColumnSchemaData('id', 'int', false, null, true),
+        new ColumnSchemaData('created_at', 'datetime', $sortNullable, null, false),
+    ])]);
+}
+
+it('seeks by the sort column, then the primary key, for ordered strategies', function (string $strategy, string $direction, string $operator): void {
+    $log = g3_orch_db([
+        [(object) ['id' => 1, 'created_at' => 'a'], (object) ['id' => 2, 'created_at' => 'b']],
+        [(object) ['id' => 3, 'created_at' => 'b'], (object) ['id' => 4, 'created_at' => 'c']],
+        [(object) ['id' => 5, 'created_at' => 'd']],
+    ]);
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData($strategy, 5, 'created_at'), [])], chunkSize: 2),
+        g3_keyset_schema(),
+    );
+
+    $order = "ORDER BY `created_at` {$direction}, `id` {$direction}";
+    $seek = "WHERE (`created_at` {$operator} ?) OR (`created_at` = ? AND `id` {$operator} ?)";
+
+    expect($log->selects)->toBe([
+        "SELECT * FROM `users` {$order} LIMIT 2",
+        "SELECT * FROM `users` {$seek} {$order} LIMIT 2",
+        "SELECT * FROM `users` {$seek} {$order} LIMIT 1", // the row limit caps the last chunk
+    ])
+        ->and($log->bindings)->toBe([[], ['b', 'b', 2], ['c', 'c', 4]])
+        ->and($result->totalRows)->toBe(5);
+})->with([
+    'first' => ['first', 'ASC', '>'],
+    'last' => ['last', 'DESC', '<'],
+]);
+
+it('stops reading once the row limit is used up', function (): void {
+    $log = g3_orch_db([
+        [(object) ['id' => 1, 'created_at' => 'a'], (object) ['id' => 2, 'created_at' => 'b']],
+        [(object) ['id' => 3, 'created_at' => 'c'], (object) ['id' => 4, 'created_at' => 'd']],
+    ]);
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', 4, 'created_at'), [])], chunkSize: 2),
+        g3_keyset_schema(),
+    );
+
+    expect($log->selects[2])->toBe('SELECT * FROM `users` WHERE 1=0')
+        ->and($log->bindings[2])->toBe([])
+        ->and($result->totalRows)->toBe(4);
+});
+
+it('seeks with a row-value comparison on PostgreSQL and SQLite, over a composite primary key', function (DatabaseConnectionType $type): void {
+    $log = g3_orch_db([
+        [(object) ['tenant_id' => 1, 'id' => 1], (object) ['tenant_id' => 1, 'id' => 2]],
+        [(object) ['tenant_id' => 2, 'id' => 1]],
+    ]);
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('users')], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
+            new ColumnSchemaData('tenant_id', 'int', false, null, true),
+            new ColumnSchemaData('id', 'int', false, null, true),
+        ])]),
+        source: g3_orch_conn('source', $type),
+    );
+
+    expect($log->selects)->toBe([
+        'SELECT * FROM "users" ORDER BY "tenant_id" ASC, "id" ASC LIMIT 2',
+        'SELECT * FROM "users" WHERE ("tenant_id", "id") > (?, ?) ORDER BY "tenant_id" ASC, "id" ASC LIMIT 2',
+    ])
+        ->and($log->bindings)->toBe([[], [1, 2]])
+        ->and($result->totalRows)->toBe(3);
+})->with([
+    'pgsql' => [DatabaseConnectionType::PostgreSQL],
+    'sqlite' => [DatabaseConnectionType::Sqlite],
+]);
+
+it('falls back to LIMIT/OFFSET when keyset pagination cannot see every row', function (DatabaseSchemaData $schema, TableRowConfigData $rows, DatabaseConnectionType $type, string $firstQuery): void {
+    $log = g3_orch_db([[(object) ['id' => 1, 'created_at' => null]]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', $rows, [])], chunkSize: 2),
+        $schema,
+        source: g3_orch_conn('source', $type),
+    );
+
+    expect($log->selects)->toBe([$firstQuery]);
+})->with([
+    'no primary key' => [
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [new ColumnSchemaData('id', 'int', false, null, false)])]),
+        new TableRowConfigData('full', null, null),
+        DatabaseConnectionType::Mysql,
+        'SELECT * FROM `users` LIMIT 2 OFFSET 0',
+    ],
+    'SQL Server' => [
+        g3_keyset_schema(),
+        new TableRowConfigData('full', null, null),
+        DatabaseConnectionType::SqlServer,
+        'SELECT * FROM [users] ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 2 ROWS ONLY',
+    ],
+    'nullable sort column' => [
+        g3_keyset_schema(sortNullable: true),
+        new TableRowConfigData('first', 10, 'created_at'),
+        DatabaseConnectionType::Mysql,
+        'SELECT * FROM `users` ORDER BY `created_at` ASC LIMIT 2 OFFSET 0',
+    ],
+    'sort column unknown to the schema' => [
+        g3_keyset_schema(),
+        new TableRowConfigData('first', 10, 'CREATED_AT'),
+        DatabaseConnectionType::Mysql,
+        'SELECT * FROM `users` ORDER BY `CREATED_AT` ASC LIMIT 2 OFFSET 0',
+    ],
+    'default sort column missing' => [
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [new ColumnSchemaData('uuid', 'char', false, null, true)])]),
+        new TableRowConfigData('last', 10, null),
+        DatabaseConnectionType::Mysql,
+        'SELECT * FROM `users` ORDER BY `id` DESC LIMIT 2 OFFSET 0',
+    ],
+]);
+
+it('falls back to LIMIT/OFFSET when a key column is not selected', function (): void {
+    $log = g3_orch_db([[(object) ['id' => 1]]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', 10, 'created_at'), [
+            g3_orch_exclude('created_at'),
+        ])], chunkSize: 2),
+        g3_keyset_schema(),
+    );
+
+    expect($log->selects)->toBe(['SELECT `id` FROM `users` ORDER BY `created_at` ASC LIMIT 2 OFFSET 0']);
+});
+
+it('fails the table instead of ending it early when a key value is missing', function (?SqlDumpService $dumpSink): void {
+    $log = g3_orch_db([[(object) ['id' => 1], (object) ['id' => null]], [(object) ['id' => 3]]]);
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('users')], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users')]),
+        dumpSink: $dumpSink,
+    );
+
+    expect($log->selects)->toHaveCount(1)
+        ->and($result->tables[0]->status)->toBe(TableRunStatus::Failed)
+        ->and($result->tables[0]->failureReason)->toBe('Cannot page table users past a row without a value in key column id');
+})->with([
+    'transfer' => [null],
+    'dump' => fn (): SqlDumpService => tap(g3_orch_dump_sink(), static fn ($sink) => $sink->shouldReceive('writeRows')),
+]);
+
+it('seeks by the primary key alone when it is also the sort column', function (): void {
+    $log = g3_orch_db([[(object) ['id' => 1], (object) ['id' => 2]], [(object) ['id' => 3]]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', 10, 'id'), [])], chunkSize: 2),
+        g3_keyset_schema(),
+    );
+
+    expect($log->selects)->toBe([
+        'SELECT * FROM `users` ORDER BY `id` ASC LIMIT 2',
+        'SELECT * FROM `users` WHERE (`id` > ?) ORDER BY `id` ASC LIMIT 2',
+    ])->and($log->bindings)->toBe([[], [2]]);
+});
+
+it('expands the seek over a composite primary key on MySQL', function (): void {
+    $log = g3_orch_db([
+        [(object) ['tenant_id' => 1, 'id' => 1], (object) ['tenant_id' => 1, 'id' => 2]],
+        [(object) ['tenant_id' => 2, 'id' => 1]],
+    ]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', 10, 'tenant_id'), [])], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
+            new ColumnSchemaData('name', 'varchar', true, null, false),
+            new ColumnSchemaData('tenant_id', 'int', false, null, true),
+            new ColumnSchemaData('id', 'int', false, null, true),
+        ])]),
+    );
+
+    expect($log->selects[1])->toBe('SELECT * FROM `users` WHERE (`tenant_id` > ?) OR (`tenant_id` = ? AND `id` > ?) ORDER BY `tenant_id` ASC, `id` ASC LIMIT 2')
+        ->and($log->bindings[1])->toBe([1, 1, 2]);
+});
+
+it('reads an ordered table without a primary key with LIMIT/OFFSET', function (): void {
+    $log = g3_orch_db([[(object) ['id' => 1, 'created_at' => 'a']]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', 10, 'created_at'), [])], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
+            new ColumnSchemaData('id', 'int', false, null, false),
+            new ColumnSchemaData('created_at', 'datetime', false, null, false),
+        ])]),
+    );
+
+    expect($log->selects)->toBe(['SELECT * FROM `users` ORDER BY `created_at` ASC LIMIT 2 OFFSET 0']);
+});
+
+it('caps LIMIT/OFFSET chunks at the row limit', function (int $limit, array $expected): void {
+    $log = g3_orch_db([
+        [(object) ['id' => 1, 'created_at' => null], (object) ['id' => 2, 'created_at' => null]],
+        [(object) ['id' => 3, 'created_at' => 'c']],
+    ]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', $limit, 'created_at'), [])], chunkSize: 2),
+        g3_keyset_schema(sortNullable: true),
+    );
+
+    expect($log->selects)->toBe($expected);
+})->with([
+    'one row left' => [3, [
+        'SELECT * FROM `users` ORDER BY `created_at` ASC LIMIT 2 OFFSET 0',
+        'SELECT * FROM `users` ORDER BY `created_at` ASC LIMIT 1 OFFSET 2',
+    ]],
+    'limit used up' => [2, [
+        'SELECT * FROM `users` ORDER BY `created_at` ASC LIMIT 2 OFFSET 0',
+        'SELECT * FROM `users` WHERE 1=0',
+    ]],
+]);
+
+it('dumps a table without a primary key with advancing offsets', function (): void {
+    $sink = g3_orch_dump_sink();
+    $sink->shouldReceive('writeRows');
+    $log = g3_orch_db([[(object) ['id' => 1]], [(object) ['id' => 2]]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('users')], chunkSize: 1),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [new ColumnSchemaData('id', 'int', false, null, false)])]),
+        dumpSink: $sink,
+    );
+
+    expect($log->selects)->toBe([
+        'SELECT * FROM `users` LIMIT 1 OFFSET 0',
+        'SELECT * FROM `users` LIMIT 1 OFFSET 1',
+        'SELECT * FROM `users` LIMIT 1 OFFSET 2',
+    ]);
 });
