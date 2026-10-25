@@ -479,6 +479,10 @@ class RunCommand extends Command
         $tableBar = null;
         $logSection = null;
 
+        // Live stats of the table currently transferring, kept for its terminal
+        // event (the `-vvv` timing summary) and then reset.
+        $currentTimings = null;
+
         if ($showProgress) {
             // Live bars own the terminal: every write must go through a section, or
             // Symfony's cursor math desyncs and re-prints the bars. Sections created
@@ -504,7 +508,10 @@ class RunCommand extends Command
             skipSchema: $skipSchema,
             skipTables: $skipTables,
             onlyTables: $onlyTables,
-            onProgress: function (string $tableName, TableRunStatus $status, int $rows, int $skipped, array $skippedRows, ?StatsTableTransferData $timings = null) use ($isVerbose, $isVeryVerbose, $isDebug, $ci, &$notFoundTables, &$schemaFailureTables, &$dotColumn, $maxDotColumns, $showProgress, $overallBar, $tableBar, $logSection): void {
+            onProgress: function (string $tableName, TableRunStatus $status, int $rows, int $skipped, array $skippedRows) use ($isVerbose, $isDebug, $ci, &$notFoundTables, &$schemaFailureTables, &$dotColumn, $maxDotColumns, $showProgress, $overallBar, $tableBar, $logSection, &$currentTimings): void {
+                $timings = $currentTimings;
+                $currentTimings = null;
+
                 // Record pre-skip outcomes for the final summary (every mode).
                 if ($status === TableRunStatus::NotFound) {
                     $notFoundTables[] = $tableName;
@@ -513,14 +520,6 @@ class RunCommand extends Command
                 }
 
                 if ($ci) {
-                    return;
-                }
-
-                if ($status === TableRunStatus::InProgress) {
-                    if ($showProgress && $timings instanceof StatsTableTransferData) {
-                        $this->advanceTableBar($tableBar, $timings, $isVeryVerbose);
-                    }
-
                     return;
                 }
 
@@ -598,6 +597,15 @@ class RunCommand extends Command
                 }
             : null,
             trackRowTotals: $showProgress,
+            onTableProgress: $showProgress || ($isDebug && ! $ci)
+                ? function (string $tableName, StatsTableTransferData $stats) use (&$currentTimings, $showProgress, $tableBar, $isVeryVerbose): void {
+                    $currentTimings = $stats;
+
+                    if ($showProgress) {
+                        $this->advanceTableBar($tableBar, $stats, $isVeryVerbose);
+                    }
+                }
+            : null,
         );
 
         if ($overallBar instanceof ProgressBar) {

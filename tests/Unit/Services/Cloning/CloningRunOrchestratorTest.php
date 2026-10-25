@@ -689,11 +689,8 @@ it('fires onTableStart exactly once before onProgress for transferred tables', f
         },
     );
 
-    // Row totals are not tracked by default, so no counting-rows event: start,
-    // then InProgress for the one chunk, then the terminal Transferred event.
     expect($events)->toBe([
         ['start', 'users'],
-        ['progress', 'users'],
         ['progress', 'users'],
     ]);
 });
@@ -735,7 +732,7 @@ it('fires onStart exactly once with the planned table count before the transfer 
         ->toBe([['start', 1]]);
 });
 
-it('announces the one-shot phases via the timings status on InProgress before the row loop', function (): void {
+it('announces the one-shot phases via onTableProgress before the row loop', function (): void {
     $source = makeOrchestratorConnection('source');
     $target = makeOrchestratorConnection('target');
     $schema = makeOrchestratorSchema();
@@ -760,13 +757,14 @@ it('announces the one-shot phases via the timings status on InProgress before th
         true,
         [],
         [],
-        static function (string $tbl, TableRunStatus $status, int $rows, int $skipped, array $skippedRows, ?StatsTableTransferData $timings = null) use (&$phases): void {
+        static function (): void {},
+        trackRowTotals: true,
+        onTableProgress: static function (string $tbl, StatsTableTransferData $stats) use (&$phases): void {
             // Read the phase at emit time (the stats object is mutated in place).
-            if ($status === TableRunStatus::InProgress && $timings?->status instanceof TableRunPhase) {
-                $phases[] = $timings->status;
+            if ($stats->status instanceof TableRunPhase) {
+                $phases[] = $stats->status;
             }
         },
-        trackRowTotals: true,
     );
 
     // Counting rows is announced first (before the count), then clearing the target,
@@ -998,7 +996,7 @@ it('preserves captured skip rows when a later chunk fetch throws', function (): 
     expect($progressArgs['skippedRows'][0]->sqlError)->toBe('SQLSTATE[23000]: row failure on chunk 1');
 });
 
-it('provides TableTransferTimingsData with per-loop entries, stats-over-time and throughput to onProgress', function (): void {
+it('reports per-table timings and throughput through onTableProgress', function (): void {
     $source = makeOrchestratorConnection('source');
     $target = makeOrchestratorConnection('target');
     $schema = makeOrchestratorSchema();
@@ -1032,8 +1030,9 @@ it('provides TableTransferTimingsData with per-loop entries, stats-over-time and
     DB::shouldReceive('insert')->andReturnTrue();
     DB::shouldReceive('purge')->andReturnNull();
 
-    /** @var list<array{status: TableRunStatus, rows: int, timings: ?StatsTableTransferData}> $events */
+    /** @var list<StatsTableTransferData> $events */
     $events = [];
+    $terminal = [];
     $orchestrator = makeOrchestrator();
     $orchestrator->run(
         $config,
@@ -1043,21 +1042,23 @@ it('provides TableTransferTimingsData with per-loop entries, stats-over-time and
         true,
         [],
         [],
-        static function (string $tbl, TableRunStatus $status, int $rows, int $skipped, array $skippedRows, ?StatsTableTransferData $timings = null) use (&$events): void {
-            $events[] = ['status' => $status, 'rows' => $rows, 'timings' => $timings];
+        static function (string $tbl, TableRunStatus $status) use (&$terminal): void {
+            $terminal[] = $status;
         },
         trackRowTotals: true,
+        onTableProgress: static function (string $tbl, StatsTableTransferData $stats) use (&$events): void {
+            $events[] = $stats;
+        },
     );
 
-    $pending = array_values(array_filter($events, static fn (array $e): bool => $e['status'] === TableRunStatus::InProgress));
-    $final = array_values(array_filter($events, static fn (array $e): bool => $e['status'] === TableRunStatus::Transferred));
+    // One event for the counting-rows phase plus one per chunk (2 chunks), then
+    // the terminal Transferred event on onProgress.
+    expect($events)->toHaveCount(3);
+    expect($terminal)->toBe([TableRunStatus::Transferred]);
 
-    // One InProgress for the counting-rows phase plus one per chunk (2 chunks).
-    expect($pending)->toHaveCount(3);
-    expect($final)->toHaveCount(1);
-
-    $timings = $final[0]['timings'];
-    expect($timings)->toBeInstanceOf(StatsTableTransferData::class);
+    // The same live object travels through every event of the table.
+    $timings = $events[0];
+    expect($events[2])->toBe($timings);
     expect($timings->totalRows)->toBe(3);
     expect($timings->rowsDone)->toBe(3);
     expect($timings->rowsSkipped)->toBe(0);

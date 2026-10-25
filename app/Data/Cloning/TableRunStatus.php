@@ -7,7 +7,6 @@ namespace App\Data\Cloning;
 enum TableRunStatus: string
 {
     case Transferred = 'transferred';
-    case InProgress = 'in_progress';
     case SkippedByFlag = 'skipped_by_flag';
     case SkippedByCascade = 'skipped_by_cascade';
     case NotFound = 'not_found';

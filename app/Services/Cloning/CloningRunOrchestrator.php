@@ -42,14 +42,11 @@ class CloningRunOrchestrator
     /**
      * @param  list<string>  $skipTables  Tables to exclude (already validated as mutually exclusive with onlyTables)
      * @param  list<string>  $onlyTables  If non-empty, only these tables are transferred
-     * @param  callable(string, TableRunStatus, int, int, list<SkippedRow>, ?StatsTableTransferData=): void  $onProgress
+     * @param  callable(string, TableRunStatus, int, int, list<SkippedRow>): void  $onProgress
      * @param  (callable(string): void)|null  $onTableStart  Optional. Fires once per table that enters `transferTable()`, regardless of whether the transfer ultimately succeeds (`Transferred`) or fails (`Failed`). Does NOT fire for tables resolved as `SkippedByFlag`, `SkippedByCascade`, `NotFound`, or `SkippedBySchemaFailure`.
      * @param  (callable(int): void)|null  $onStart  Optional. Fires exactly once, before the transfer loop, with the number of tables the loop will iterate. Note: when `$breakOnFailure` aborts early, fewer terminal `onProgress` events fire than this count. Useful for sizing an overall progress bar.
-     *
-     * The `$onProgress` `$timings` argument is a live, mutable object reused across
-     * every event for a table — read it synchronously inside the callback; do not
-     * retain the reference expecting a point-in-time snapshot.
      * @param  bool  $trackRowTotals  When true, run a `SELECT COUNT(*)` per table (respecting the row limit) to size per-table progress. Off by default so non-interactive runs don't pay for a count nobody consumes.
+     * @param  (callable(string, StatsTableTransferData): void)|null  $onTableProgress  Optional. Fires while a table transfers: when each one-shot phase starts (row total, FK checks, clear) and after every chunk. The same live object is passed for the whole table and holds its final figures once the table's terminal `onProgress` event fires.
      */
     public function run(
         CloningConfigData $config,
@@ -66,6 +63,7 @@ class CloningRunOrchestrator
         ?SqlDumpService $dumpSink = null,
         ?callable $onStart = null,
         bool $trackRowTotals = false,
+        ?callable $onTableProgress = null,
     ): RunResultData {
         $start = microtime(true);
         $tableNames = array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $config->tables);
@@ -246,8 +244,8 @@ class CloningRunOrchestrator
                 ))
                 : [];
 
-            [$rows, $skipped, $failed, $reason, $skippedRows, $timings] = $dumpSink instanceof SqlDumpService
-                ? [...$this->dumpTable(
+            [$rows, $skipped, $failed, $reason, $skippedRows] = $dumpSink instanceof SqlDumpService
+                ? $this->dumpTable(
                     $config->options,
                     $tableConfig,
                     $source,
@@ -256,7 +254,7 @@ class CloningRunOrchestrator
                     $keyRemapping,
                     $config->keyRemapping,
                     $selectColumns,
-                ), null]
+                )
                 : $this->transferTable(
                     $config->options,
                     $tableConfig,
@@ -267,8 +265,8 @@ class CloningRunOrchestrator
                     $keyRemapping,
                     $config->keyRemapping,
                     $selectColumns,
-                    $onProgress,
                     $trackRowTotals,
+                    $onTableProgress,
                 );
 
             $tableDuration = microtime(true) - $tableStart;
@@ -285,7 +283,7 @@ class CloningRunOrchestrator
             $tableResults[] = new TableRunResultData($tableName, $status, $rows, $skipped, $tableDuration, $reason, $notes);
             $totalRows += $rows;
             $totalSkipped += $skipped;
-            ($onProgress)($tableName, $status, $rows, $skipped, $skippedRows, $timings);
+            ($onProgress)($tableName, $status, $rows, $skipped, $skippedRows);
 
             if ($failed && $breakOnFailure) {
                 break;
@@ -341,11 +339,12 @@ class CloningRunOrchestrator
     }
 
     /**
-     * Transfer a single table. Returns [rowsTransferred, rowsSkipped, hasFailed, failureReason, skippedRows, timings].
+     * Transfer a single table. Returns [rowsTransferred, rowsSkipped, hasFailed, failureReason, skippedRows].
      *
      * @param  list<string>  $pkColumns
      * @param  list<string>|null  $selectColumns  Explicit source columns to copy; null copies all
-     * @return array{int, int, bool, ?string, list<SkippedRow>, StatsTableTransferData}
+     * @param  (callable(string, StatsTableTransferData): void)|null  $onTableProgress
+     * @return array{int, int, bool, ?string, list<SkippedRow>}
      */
     private function transferTable(
         CloningOptionsData $options,
@@ -357,10 +356,9 @@ class CloningRunOrchestrator
         ?KeyRemappingService $keyRemapping,
         ?KeyRemappingConfigData $keyRemappingConfig,
         ?array $selectColumns,
-        callable $onProgress,
-        bool $trackRowTotals = false,
+        bool $trackRowTotals,
+        ?callable $onTableProgress,
     ): array {
-
         $sourceConn = $this->connector->open($source);
         $targetConn = $this->connector->open($target);
 
@@ -374,12 +372,17 @@ class CloningRunOrchestrator
         $skippedRows = [];
 
         $stats = new StatsTableTransferData;
+        $reportProgress = static function () use ($onTableProgress, $tableConfig, $stats): void {
+            if ($onTableProgress !== null) {
+                $onTableProgress($tableConfig->tableName, $stats);
+            }
+        };
 
         // Only pay for the row count when a consumer actually wants per-table
         // progress totals; otherwise skip it (totalRows stays 0 → indeterminate).
         if ($trackRowTotals) {
             $stats->setStatus(TableRunPhase::CountingRows);
-            ($onProgress)($tableConfig->tableName, TableRunStatus::InProgress, $rows, $skipped, $skippedRows, $stats);
+            $reportProgress();
 
             $tCount = microtime(true);
             $stats->setTotalRows($this->countSourceRows($sourceConn, $tableConfig, $source));
@@ -391,7 +394,7 @@ class CloningRunOrchestrator
         try {
             if ($options->disableForeignKeyChecks) {
                 $stats->setStatus(TableRunPhase::DisableFkChecks);
-                ($onProgress)($tableConfig->tableName, TableRunStatus::InProgress, $rows, $skipped, $skippedRows, $stats);
+                $reportProgress();
 
                 $t0 = microtime(true);
                 $this->disableFkChecks($targetConn, $target);
@@ -400,7 +403,7 @@ class CloningRunOrchestrator
 
             if ($tableConfig->rows->clear !== ClearMode::None) {
                 $stats->setStatus(TableRunPhase::Clear);
-                ($onProgress)($tableConfig->tableName, TableRunStatus::InProgress, $rows, $skipped, $skippedRows, $stats);
+                $reportProgress();
 
                 $t0 = microtime(true);
                 $this->clearTable($targetConn, $tableConfig->tableName, $tableConfig->rows->clear, $target);
@@ -408,7 +411,7 @@ class CloningRunOrchestrator
             }
 
             if ($tableConfig->rows->strategy === 'schema') {
-                return [0, 0, false, null, [], $stats];
+                return [0, 0, false, null, []];
             }
 
             do {
@@ -490,7 +493,7 @@ class CloningRunOrchestrator
                     totalRows: $stats->totalRows,
                 ));
 
-                ($onProgress)($tableConfig->tableName, TableRunStatus::InProgress, $rows, $skipped, [], $stats);
+                $reportProgress();
 
                 $offset += count($chunk);
                 $loopIndex++;
@@ -502,12 +505,12 @@ class CloningRunOrchestrator
                     $reason .= sprintf(': %s', $firstInsertError);
                 }
 
-                return [0, $skipped, true, $reason, $skippedRows, $stats];
+                return [0, $skipped, true, $reason, $skippedRows];
             }
 
-            return [$rows, $skipped, false, null, $skippedRows, $stats];
+            return [$rows, $skipped, false, null, $skippedRows];
         } catch (Throwable $throwable) {
-            return [$rows, $skipped, true, $throwable->getMessage(), $skippedRows, $stats];
+            return [$rows, $skipped, true, $throwable->getMessage(), $skippedRows];
         } finally {
             if ($options->disableForeignKeyChecks) {
                 $this->enableFkChecks($targetConn, $target);
