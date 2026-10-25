@@ -378,20 +378,20 @@ class CloningRunOrchestrator
             }
         };
 
-        // Only pay for the row estimate when a consumer actually wants per-table
-        // progress totals and the table copies rows; otherwise totalRows stays 0
-        // (unknown).
-        if ($trackRowTotals && $tableConfig->rows->strategy !== 'schema') {
-            $stats->setStatus(TableRunPhase::EstimatingRows);
-            $reportProgress();
-
-            $tCount = microtime(true);
-            [$expectedRows, $isEstimate] = $this->estimateSourceRows($sourceConn, $tableConfig, $source);
-            $stats->setTotalRows($expectedRows, $isEstimate);
-            $stats->recordEstimatingRows(microtime(true) - $tCount);
-        }
-
         try {
+            // Only pay for the row estimate when a consumer actually wants per-table
+            // progress totals and the table copies rows; otherwise totalRows stays 0
+            // (unknown).
+            if ($trackRowTotals && $tableConfig->rows->strategy !== 'schema') {
+                $stats->setStatus(TableRunPhase::EstimatingRows);
+                $reportProgress();
+
+                $t0 = microtime(true);
+                [$expectedRows, $isEstimate] = $this->estimateSourceRows($sourceConn, $tableConfig, $source);
+                $stats->setTotalRows($expectedRows, $isEstimate);
+                $stats->recordEstimatingRows(microtime(true) - $t0);
+            }
+
             if ($options->disableForeignKeyChecks) {
                 $stats->setStatus(TableRunPhase::DisableFkChecks);
                 $reportProgress();
@@ -415,15 +415,15 @@ class CloningRunOrchestrator
             }
 
             $stats->setStatus(TableRunPhase::Loop);
+            $reportProgress();
 
             do {
                 $tOverall = microtime(true);
-                $tSelect = microtime(true);
                 /** @var list<object> $chunk */
                 $chunk = DB::connection($sourceConn)->select(
                     $this->buildChunkQuery($tableConfig, $source, $offset, $chunkSize, $selectColumns)
                 );
-                $selectSeconds = microtime(true) - $tSelect;
+                $selectSeconds = microtime(true) - $tOverall;
 
                 if ($chunk === []) {
                     break; // @pest-mutate-ignore: BreakToContinue
@@ -433,14 +433,14 @@ class CloningRunOrchestrator
                 $transformed = $this->transformChunk($chunk, $tableConfig, $engine, $keyRemapping, $keyRemappingConfig);
                 $transformSeconds = microtime(true) - $tTransform;
 
-                $chunkRowsAttempted = count($transformed);
-                $loopRowsDone = 0;
-                $loopRowsSkipped = 0;
+                // Count rows as they land, so a throw mid-chunk still reports them.
+                $rowsBefore = $rows;
+                $skippedBefore = $skipped;
                 $insertStart = microtime(true);
                 // Bulk insert into target
                 try {
                     DB::connection($targetConn)->table($tableConfig->tableName)->insert($transformed);
-                    $loopRowsDone = $chunkRowsAttempted;
+                    $rows += count($transformed);
                 } catch (Throwable $bulkError) {
                     $firstInsertError ??= $bulkError->getMessage();
 
@@ -448,9 +448,9 @@ class CloningRunOrchestrator
                     foreach ($transformed as $rowIndexInChunk => $row) {
                         try {
                             DB::connection($targetConn)->table($tableConfig->tableName)->insert($row);
-                            $loopRowsDone++;
+                            $rows++;
                         } catch (Throwable $rowError) {
-                            $loopRowsSkipped++;
+                            $skipped++;
                             /** @var array<string, mixed> $sourceRow */
                             $sourceRow = (array) $chunk[$rowIndexInChunk];
                             $pkSnapshot = $this->extractPkSnapshot($sourceRow, $pkColumns);
@@ -474,20 +474,16 @@ class CloningRunOrchestrator
                 }
 
                 $insertSeconds = microtime(true) - $insertStart;
-
-                $rows += $loopRowsDone;
-                $skipped += $loopRowsSkipped;
-
                 $overallSeconds = microtime(true) - $tOverall;
 
                 $stats->recordLoop(new StatsLoopData(
-                    chunkRows: $chunkRowsAttempted,
+                    chunkRows: count($transformed),
                     selectSeconds: $selectSeconds,
                     transformSeconds: $transformSeconds,
                     insertSeconds: $insertSeconds,
                     overallSeconds: $overallSeconds,
-                    rowsDone: $loopRowsDone,
-                    rowsSkipped: $loopRowsSkipped,
+                    rowsDone: $rows - $rowsBefore,
+                    rowsSkipped: $skipped - $skippedBefore,
                 ));
 
                 $reportProgress();
@@ -662,8 +658,11 @@ class CloningRunOrchestrator
                 [$config->tableName],
                 true,
             ],
+            // Bounded by the row limit, so a 'first' / 'last' table is not counted in full.
             default => [
-                sprintf('SELECT COUNT(*) AS c FROM %s', $this->quoteTable($config->tableName, $source->type)),
+                $config->rows->strategy !== 'full' && $config->rows->limit !== null
+                    ? sprintf('SELECT COUNT(*) AS c FROM (SELECT 1 FROM %s LIMIT %d)', $this->quoteTable($config->tableName, $source->type), $config->rows->limit)
+                    : sprintf('SELECT COUNT(*) AS c FROM %s', $this->quoteTable($config->tableName, $source->type)),
                 [],
                 false,
             ],
