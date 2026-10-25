@@ -378,9 +378,10 @@ class CloningRunOrchestrator
             }
         };
 
-        // Only pay for the row count when a consumer actually wants per-table
-        // progress totals; otherwise skip it (totalRows stays 0 → indeterminate).
-        if ($trackRowTotals) {
+        // Only pay for the row estimate when a consumer actually wants per-table
+        // progress totals and the table copies rows; otherwise totalRows stays 0
+        // (unknown).
+        if ($trackRowTotals && $tableConfig->rows->strategy !== 'schema') {
             $stats->setStatus(TableRunPhase::EstimatingRows);
             $reportProgress();
 
@@ -671,27 +672,24 @@ class CloningRunOrchestrator
 
         try {
             $result = DB::connection($sourceConn)->selectOne($sql, $bindings);
-            $count = 0;
-            if (is_object($result) && property_exists($result, 'c') && is_numeric($result->c)) {
-                $count = (int) $result->c;
-            } elseif (is_array($result) && array_key_exists('c', $result) && is_numeric($result['c'])) {
-                $count = (int) $result['c'];
-            }
-
-            // PostgreSQL reports -1 for a table that was never analyzed: unknown.
-            $count = max(0, $count);
-
-            $limit = $config->rows->limit;
-            if ($limit !== null && $limit >= 0 && $limit < $count) {
-                return [$limit, $isEstimate];
-            }
-
-            return [$count, $isEstimate];
         } catch (Throwable $throwable) {
             Log::warning('source_row_estimate_failed', ['table' => $config->tableName, 'error' => $throwable->getMessage()]);
-
-            return [0, false];
+            $result = null;
+            $isEstimate = false;
         }
+
+        $row = is_object($result) ? get_object_vars($result) : $result;
+        $value = is_array($row) ? ($row['c'] ?? null) : null;
+        // Unreadable means unknown (0). PostgreSQL reports -1 for a table that was
+        // never analyzed; setTotalRows() clamps that to 0 as well.
+        $count = is_numeric($value) ? (int) $value : 0; // @pest-mutate-ignore: DecrementInteger
+
+        // Mirrors buildChunkQuery(): only 'first' / 'last' honour the row limit.
+        if ($config->rows->strategy !== 'full' && $config->rows->limit !== null) {
+            $count = min($config->rows->limit, $count);
+        }
+
+        return [$count, $isEstimate];
     }
 
     /**
