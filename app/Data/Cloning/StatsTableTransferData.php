@@ -17,13 +17,16 @@ final class StatsTableTransferData
     public private(set) ?TableRunPhase $status = null;
 
     /** Wall-clock seconds for each one-shot phase; null until (and unless) it runs. */
-    public private(set) ?float $countingRowsSeconds = null;
+    public private(set) ?float $estimatingRowsSeconds = null;
 
     public private(set) ?float $disableFkSeconds = null;
 
     public private(set) ?float $clearTableSeconds = null;
 
     public private(set) int $totalRows = 0;
+
+    /** Whether `totalRows` comes from catalog statistics rather than an exact count. */
+    public private(set) bool $totalRowsEstimated = false;
 
     public private(set) int $rowsDone = 0;
 
@@ -39,25 +42,32 @@ final class StatsTableTransferData
         get => max(0, $this->totalRows - $this->rowsProcessed);
     }
 
+    /**
+     * Whether `totalRows` still sizes the work: known, and not overrun by the
+     * rows processed (an estimate can be too low).
+     */
+    public bool $hasKnownTotal {
+        get => $this->totalRows > 0 && $this->rowsProcessed <= $this->totalRows;
+    }
+
     /** Completion ratio in the range [0, 100], or null when the total is unknown. */
     public ?float $percentComplete {
-        get => $this->totalRows > 0
-            ? min(100.0, ($this->rowsProcessed / $this->totalRows) * 100.0)
+        get => $this->hasKnownTotal
+            ? ($this->rowsProcessed / $this->totalRows) * 100.0
             : null;
     }
 
     /**
      * Estimated wall-clock seconds until this table finishes, from the latest
-     * loop pace × outstanding rows. 0.0 once no rows remain, and 0.0 until a
-     * row total and at least one completed loop are known.
+     * loop pace × outstanding rows. Null while the total or the pace is unknown.
      */
-    public float $estimatedSecondsRemaining {
+    public ?float $estimatedSecondsRemaining {
         get {
-            if ($this->rowsRemaining <= 0) {
-                return 0.0;
-            }
+            $pace = $this->loopAggregate->latestPace;
 
-            return $this->loopAggregate->latestPace * $this->rowsRemaining;
+            return $this->hasKnownTotal && $pace !== null
+                ? $pace * $this->rowsRemaining
+                : null;
         }
     }
 
@@ -87,14 +97,15 @@ final class StatsTableTransferData
         $this->status = $status;
     }
 
-    public function setTotalRows(int $totalRows): void
+    public function setTotalRows(int $totalRows, bool $estimated = false): void
     {
         $this->totalRows = max(0, $totalRows);
+        $this->totalRowsEstimated = $estimated;
     }
 
-    public function recordCountingRows(float $seconds): void
+    public function recordEstimatingRows(float $seconds): void
     {
-        $this->countingRowsSeconds = $seconds;
+        $this->estimatingRowsSeconds = $seconds;
     }
 
     public function recordDisableFk(float $seconds): void
@@ -122,7 +133,7 @@ final class StatsTableTransferData
     public function aggregate(TableRunPhase $phase): StatsPhaseAggregateData
     {
         return match ($phase) {
-            TableRunPhase::CountingRows => $this->oneShotAggregate($this->countingRowsSeconds),
+            TableRunPhase::EstimatingRows => $this->oneShotAggregate($this->estimatingRowsSeconds),
             TableRunPhase::DisableFkChecks => $this->oneShotAggregate($this->disableFkSeconds),
             TableRunPhase::Clear => $this->oneShotAggregate($this->clearTableSeconds),
             TableRunPhase::Select => $this->selectAggregate,

@@ -768,7 +768,7 @@ it('announces the one-shot phases via onTableProgress before the row loop', func
 
     // Counting rows is announced first (before the count), then clearing the target,
     // both ahead of the per-chunk loop phase (Insert). No FK-disable phase here.
-    expect($phases[0])->toBe(TableRunPhase::CountingRows);
+    expect($phases[0])->toBe(TableRunPhase::EstimatingRows);
     expect($phases[1])->toBe(TableRunPhase::Clear);
     expect($phases[0]->isOneShot())->toBeTrue();
     expect($phases[2])->toBe(TableRunPhase::Insert);
@@ -1087,4 +1087,129 @@ it('returns null throughput and percent when total rows is zero on StatsTableTra
     $timings = new StatsTableTransferData;
     expect($timings->aggregate(TableRunPhase::Insert)->pacePerMillion)->toBeNull();
     expect($timings->percentComplete)->toBeNull();
+});
+
+/**
+ * Transfer one table with row totals tracked and return its live stats.
+ */
+function runTrackingRowTotals(DatabaseConnectionType $sourceType, ?int $limit = null): StatsTableTransferData
+{
+    $config = new CloningConfigData(
+        version: '1',
+        connectionName: 'source',
+        options: new CloningOptionsData(
+            chunkSize: 1000,
+            enforceColumnTypes: false,
+            dropUnknownTables: false,
+            dropExtraColumns: false,
+            disableForeignKeyChecks: false,
+            fakerLocale: 'en_US',
+        ),
+        tables: [
+            new TableCloningConfigData(
+                tableName: 'users',
+                rows: new TableRowConfigData(strategy: 'first', limit: $limit, sortBy: 'id', clear: ClearMode::None),
+                columns: [],
+            ),
+        ],
+    );
+
+    $stats = null;
+    makeOrchestrator()->run(
+        $config,
+        makeOrchestratorConnection('source', $sourceType),
+        makeOrchestratorConnection('target'),
+        makeOrchestratorSchema(),
+        true,
+        [],
+        [],
+        static function (): void {},
+        trackRowTotals: true,
+        onTableProgress: static function (string $tbl, StatsTableTransferData $s) use (&$stats): void {
+            $stats = $s;
+        },
+    );
+
+    expect($stats)->toBeInstanceOf(StatsTableTransferData::class);
+
+    return $stats;
+}
+
+it('sizes the table from catalog statistics on server databases and counts on SQLite', function (DatabaseConnectionType $type, string $sql, array $bindings, bool $estimated): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->once()->with($sql, $bindings)->andReturn((object) ['c' => '42']);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $stats = runTrackingRowTotals($type);
+
+    expect($stats->totalRows)->toBe(42);
+    expect($stats->totalRowsEstimated)->toBe($estimated);
+    expect($stats->aggregate(TableRunPhase::EstimatingRows)->count)->toBe(1);
+})->with([
+    'mysql' => [DatabaseConnectionType::Mysql, 'SELECT TABLE_ROWS AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['users'], true],
+    'mariadb' => [DatabaseConnectionType::MariaDB, 'SELECT TABLE_ROWS AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['users'], true],
+    'pgsql' => [DatabaseConnectionType::PostgreSQL, 'SELECT c.reltuples::bigint AS c FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname = ?', ['users'], true],
+    'sqlsrv' => [DatabaseConnectionType::SqlServer, 'SELECT SUM(p.rows) AS c FROM sys.partitions p WHERE p.object_id = OBJECT_ID(?) AND p.index_id IN (0, 1)', ['users'], true],
+    'sqlite' => [DatabaseConnectionType::Sqlite, 'SELECT COUNT(*) AS c FROM "users"', [], false],
+]);
+
+it('reads the row total from an associative result row', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn(['c' => 7]);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    expect(runTrackingRowTotals(DatabaseConnectionType::Mysql)->totalRows)->toBe(7);
+});
+
+it('caps the row total at the row strategy limit', function (int $estimate, ?int $limit, int $expected): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn((object) ['c' => $estimate]);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $stats = runTrackingRowTotals(DatabaseConnectionType::Mysql, $limit);
+
+    expect($stats->totalRows)->toBe($expected);
+    expect($stats->totalRowsEstimated)->toBeTrue();
+})->with([
+    'below limit' => [50, 100, 50],
+    'at limit' => [100, 100, 100],
+    'above limit' => [5000, 100, 100],
+    'zero limit' => [5000, 0, 0],
+    'no limit' => [5000, null, 5000],
+]);
+
+it('treats a never-analyzed PostgreSQL table (-1) or an unreadable result as an unknown total', function (mixed $result): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn($result);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    expect(runTrackingRowTotals(DatabaseConnectionType::PostgreSQL)->totalRows)->toBe(0);
+})->with([
+    'never analyzed' => [(object) ['c' => -1]],
+    'no row' => [null],
+    'non-numeric' => [(object) ['c' => 'n/a']],
+    'missing column' => [(object) ['rows' => 5]],
+]);
+
+it('keeps transferring with an unknown total when the row estimate fails', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andThrow(new RuntimeException('permission denied for pg_class'));
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $stats = runTrackingRowTotals(DatabaseConnectionType::PostgreSQL);
+
+    expect($stats->totalRows)->toBe(0);
+    expect($stats->totalRowsEstimated)->toBeFalse();
+
+    $events = array_values(array_filter(
+        app(AuditBuffer::class)->records(),
+        static fn (array $e): bool => $e['event'] === 'source_row_estimate_failed',
+    ));
+    expect($events)->toHaveCount(1);
+    expect($events[0]['error'])->toBe('permission denied for pg_class');
 });

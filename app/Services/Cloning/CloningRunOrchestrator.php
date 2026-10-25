@@ -45,7 +45,7 @@ class CloningRunOrchestrator
      * @param  callable(string, TableRunStatus, int, int, list<SkippedRow>): void  $onProgress
      * @param  (callable(string): void)|null  $onTableStart  Optional. Fires once per table that enters `transferTable()`, regardless of whether the transfer ultimately succeeds (`Transferred`) or fails (`Failed`). Does NOT fire for tables resolved as `SkippedByFlag`, `SkippedByCascade`, `NotFound`, or `SkippedBySchemaFailure`.
      * @param  (callable(int): void)|null  $onStart  Optional. Fires exactly once, before the transfer loop, with the number of tables the loop will iterate. Note: when `$breakOnFailure` aborts early, fewer terminal `onProgress` events fire than this count. Useful for sizing an overall progress bar.
-     * @param  bool  $trackRowTotals  When true, run a `SELECT COUNT(*)` per table (respecting the row limit) to size per-table progress. Off by default so non-interactive runs don't pay for a count nobody consumes.
+     * @param  bool  $trackRowTotals  When true, look up the expected row total per table (respecting the row limit) to size per-table progress: a catalog-statistics estimate on server databases, so the production source is never scanned, and `COUNT(*)` on SQLite. Off by default so non-interactive runs don't pay for a lookup nobody consumes.
      * @param  (callable(string, StatsTableTransferData): void)|null  $onTableProgress  Optional. Fires while a table transfers: when each one-shot phase starts (row total, FK checks, clear) and after every chunk. The same live object is passed for the whole table and holds its final figures once the table's terminal `onProgress` event fires.
      */
     public function run(
@@ -381,12 +381,13 @@ class CloningRunOrchestrator
         // Only pay for the row count when a consumer actually wants per-table
         // progress totals; otherwise skip it (totalRows stays 0 → indeterminate).
         if ($trackRowTotals) {
-            $stats->setStatus(TableRunPhase::CountingRows);
+            $stats->setStatus(TableRunPhase::EstimatingRows);
             $reportProgress();
 
             $tCount = microtime(true);
-            $stats->setTotalRows($this->countSourceRows($sourceConn, $tableConfig, $source));
-            $stats->recordCountingRows(microtime(true) - $tCount);
+            [$expectedRows, $isEstimate] = $this->estimateSourceRows($sourceConn, $tableConfig, $source);
+            $stats->setTotalRows($expectedRows, $isEstimate);
+            $stats->recordEstimatingRows(microtime(true) - $tCount);
         }
 
         try {
@@ -635,14 +636,41 @@ class CloningRunOrchestrator
     }
 
     /**
-     * Best-effort SELECT COUNT(*) on the source table respecting the row
-     * strategy limit. Returns 0 on failure so progress stays optional.
+     * Best-effort expected row total of the source table, respecting the row
+     * strategy limit. Server databases answer from catalog statistics, so a
+     * large production table is never scanned; the figure is then an estimate
+     * that can be off in either direction. SQLite keeps no such statistics and
+     * counts. Returns 0 (unknown) on failure so progress stays optional.
+     *
+     * @return array{int, bool} [rows, isEstimate]
      */
-    private function countSourceRows(string $sourceConn, TableCloningConfigData $config, ConnectionData $source): int
+    private function estimateSourceRows(string $sourceConn, TableCloningConfigData $config, ConnectionData $source): array
     {
+        [$sql, $bindings, $isEstimate] = match ($source->type) {
+            DatabaseConnectionType::Mysql, DatabaseConnectionType::MariaDB => [
+                'SELECT TABLE_ROWS AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+                [$config->tableName],
+                true,
+            ],
+            DatabaseConnectionType::PostgreSQL => [
+                'SELECT c.reltuples::bigint AS c FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname = ?',
+                [$config->tableName],
+                true,
+            ],
+            DatabaseConnectionType::SqlServer => [
+                'SELECT SUM(p.rows) AS c FROM sys.partitions p WHERE p.object_id = OBJECT_ID(?) AND p.index_id IN (0, 1)',
+                [$config->tableName],
+                true,
+            ],
+            default => [
+                sprintf('SELECT COUNT(*) AS c FROM %s', $this->quoteTable($config->tableName, $source->type)),
+                [],
+                false,
+            ],
+        };
+
         try {
-            $quoted = $this->quoteTable($config->tableName, $source->type);
-            $result = DB::connection($sourceConn)->selectOne(sprintf('SELECT COUNT(*) AS c FROM %s', $quoted));
+            $result = DB::connection($sourceConn)->selectOne($sql, $bindings);
             $count = 0;
             if (is_object($result) && property_exists($result, 'c') && is_numeric($result->c)) {
                 $count = (int) $result->c;
@@ -650,16 +678,19 @@ class CloningRunOrchestrator
                 $count = (int) $result['c'];
             }
 
+            // PostgreSQL reports -1 for a table that was never analyzed: unknown.
+            $count = max(0, $count);
+
             $limit = $config->rows->limit;
             if ($limit !== null && $limit >= 0 && $limit < $count) {
-                return $limit;
+                return [$limit, $isEstimate];
             }
 
-            return $count;
+            return [$count, $isEstimate];
         } catch (Throwable $throwable) {
-            Log::warning('source_row_count_failed', ['table' => $config->tableName, 'error' => $throwable->getMessage()]);
+            Log::warning('source_row_estimate_failed', ['table' => $config->tableName, 'error' => $throwable->getMessage()]);
 
-            return 0;
+            return [0, false];
         }
     }
 

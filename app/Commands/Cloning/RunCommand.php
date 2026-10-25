@@ -1120,7 +1120,7 @@ class RunCommand extends Command
      */
     private function startTableBar(ProgressBar $bar, string $tableName): void
     {
-        $bar->setFormat('  %table%  [%bar%]  %message%');
+        $bar->setFormat('  %table%  [%bar%] %current%  %message%');
         $bar->setMessage($tableName, 'table');
         $bar->setMessage('', 'message');
         $bar->start(0);
@@ -1148,17 +1148,18 @@ class RunCommand extends Command
             return;
         }
 
-        if ($stats->totalRows > 0) {
-            if ($bar->getMaxSteps() !== $stats->totalRows) {
-                $bar->setMaxSteps($stats->totalRows);
-                $bar->setFormat('  %table%  [%bar%] %current%/%max% (%percent:3s%%)  %message%');
-            }
+        // Determinate while the (possibly estimated) total holds; back to a plain
+        // row counter once an estimate turns out too low.
+        $max = $stats->hasKnownTotal ? $stats->totalRows : 0;
 
-            $bar->setProgress(min($stats->rowsProcessed, $stats->totalRows));
-
-            return;
+        if ($bar->getMaxSteps() !== $max) {
+            $bar->setMaxSteps($max);
+            $bar->setFormat($max > 0
+                ? '  %table%  [%bar%] %current%/%approx%%max% (%percent:3s%%)  %message%'
+                : '  %table%  [%bar%] %current%  %message%');
         }
 
+        $bar->setMessage($stats->totalRowsEstimated ? '~' : '', 'approx');
         $bar->setProgress($stats->rowsProcessed);
     }
 
@@ -1173,21 +1174,25 @@ class RunCommand extends Command
      */
     private function formatProgress(StatsTableTransferData $stats, bool $verbose): string
     {
-        $eta = 'ETA '.$this->formatDuration($stats->estimatedSecondsRemaining);
+        $parts = $stats->estimatedSecondsRemaining !== null
+            ? ['ETA '.$this->formatDuration($stats->estimatedSecondsRemaining)]
+            : [];
         $overall = trim($this->formatThroughput($stats->loopAggregate->latestPacePerMillion));
 
         if (! $verbose) {
-            return $overall === '—' ? $eta : $eta.' · '.$overall;
+            if ($overall !== '—') {
+                $parts[] = $overall;
+            }
+
+            return implode(' · ', $parts);
         }
 
-        return sprintf(
-            '%s · all %s · sel %s · tr %s · ins %s',
-            $eta,
-            $overall,
-            trim($this->formatThroughput($stats->selectAggregate->latestPacePerMillion)),
-            trim($this->formatThroughput($stats->transformAggregate->latestPacePerMillion)),
-            trim($this->formatThroughput($stats->insertAggregate->latestPacePerMillion)),
-        );
+        $parts[] = 'all '.$overall;
+        $parts[] = 'sel '.trim($this->formatThroughput($stats->selectAggregate->latestPacePerMillion));
+        $parts[] = 'tr '.trim($this->formatThroughput($stats->transformAggregate->latestPacePerMillion));
+        $parts[] = 'ins '.trim($this->formatThroughput($stats->insertAggregate->latestPacePerMillion));
+
+        return implode(' · ', $parts);
     }
 
     private function renderTimingSummary(OutputInterface $sink, StatsTableTransferData $timings): void

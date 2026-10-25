@@ -7,14 +7,14 @@ namespace App\Data\Cloning;
 /**
  * The distinct phases tracked during a single table transfer.
  *
- * `CountingRows` / `DisableFkChecks` / `Clear` are one-shot phases that run once
+ * `EstimatingRows` / `DisableFkChecks` / `Clear` are one-shot phases that run once
  * before the chunk loop. `Select` / `Transform` / `Insert` are the per-chunk
  * sub-phases, and `Loop` is the whole-loop wall-clock. `cases()` yields them in
  * render order (one-shot first, then the per-chunk sub-phases, then `Loop`).
  */
 enum TableRunPhase: string
 {
-    case CountingRows = 'countingRows';
+    case EstimatingRows = 'estimatingRows';
     case DisableFkChecks = 'disablingFkChecks';
     case Clear = 'clearingData';
 
@@ -26,7 +26,7 @@ enum TableRunPhase: string
     public function isOneShot(): bool
     {
         return match ($this) {
-            self::CountingRows, self::DisableFkChecks, self::Clear => true,
+            self::EstimatingRows, self::DisableFkChecks, self::Clear => true,
             default => false,
         };
     }
@@ -35,7 +35,7 @@ enum TableRunPhase: string
     public function label(): string
     {
         return match ($this) {
-            self::CountingRows => 'counting rows',
+            self::EstimatingRows => 'estimating rows',
             self::DisableFkChecks => 'disabling FK checks',
             self::Clear => 'clearing data',
             self::Select => 'selecting',

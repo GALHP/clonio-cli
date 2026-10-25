@@ -5,7 +5,7 @@ declare(strict_types=1);
 use App\Data\Cloning\TableRunPhase;
 
 it('marks only the pre-loop phases as one-shot', function (): void {
-    expect(TableRunPhase::CountingRows->isOneShot())->toBeTrue();
+    expect(TableRunPhase::EstimatingRows->isOneShot())->toBeTrue();
     expect(TableRunPhase::DisableFkChecks->isOneShot())->toBeTrue();
     expect(TableRunPhase::Clear->isOneShot())->toBeTrue();
 
@@ -21,6 +21,6 @@ it('gives every phase a human-readable label distinct from its raw value', funct
             ->and($phase->label())->not->toBe($phase->value);
     }
 
-    expect(TableRunPhase::CountingRows->label())->toBe('counting rows');
+    expect(TableRunPhase::EstimatingRows->label())->toBe('estimating rows');
     expect(TableRunPhase::DisableFkChecks->label())->toBe('disabling FK checks');
 });
