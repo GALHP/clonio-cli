@@ -174,22 +174,52 @@ it('formats the ETA in minutes and hours', function (int $totalRows, string $eta
     'hours and minutes' => [100_000, '2h 46m'],
 ]);
 
-it('fills the table bar when the table finishes', function (): void {
+it('ends a transferred table with its exact row count, without estimate or ETA', function (): void {
+    [$display, $table] = makeProgressDisplay();
+    $display->startTable('users');
+
+    $stats = new StatsTableTransferData;
+    $stats->setTotalRows(10, estimated: true);
+    $stats->setStatus(TableRunPhase::Loop);
+    $stats->recordLoop(progressLoop(rows: 4, seconds: 1.0));
+    $display->advanceTable($stats);
+    expect(sectionText($table))->toContain('4/~10 ( 40%)  ETA');
+
+    $display->finishTable(transferred: true, stats: $stats);
+
+    expect(sectionText($table))->toBe('  users  [============================]    4  250000.0 s/M');
+});
+
+it('ends a transferred table without stats as a bare row counter', function (): void {
+    [$display, $table] = makeProgressDisplay();
+    $display->startTable('users');
+
+    $display->finishTable(transferred: true);
+
+    expect(sectionText($table))->toMatch('/^  users  \[[^\]]+\]    0  $/');
+});
+
+it('ends a failed table as stopped instead of filling its bar', function (): void {
     [$display, $table] = makeProgressDisplay();
     $display->startTable('users');
 
     $stats = new StatsTableTransferData;
     $stats->setTotalRows(10);
-    $stats->setStatus(TableRunPhase::Insert);
+    $stats->setStatus(TableRunPhase::Loop);
     $stats->recordLoop(progressLoop(rows: 4, seconds: 1.0));
     $display->advanceTable($stats);
-    $display->finishTable();
 
-    expect(sectionText($table))->toContain('10/10 (100%)');
+    $display->finishTable(transferred: false, stats: $stats);
+
+    expect(sectionText($table))->toBe('  users  stopped after 4 rows');
 });
 
-it('counts finished tables on the overall bar', function (): void {
-    [$display, , $overall] = makeProgressDisplay();
+it('counts finished tables on the overall bar on every table', function (): void {
+    // The default throttle: the overall bar must still redraw on each table.
+    $stream = fopen('php://memory', 'w+');
+    $sections = [];
+    $section = static fn (): ConsoleSectionOutput => new ConsoleSectionOutput($stream, $sections, OutputInterface::VERBOSITY_NORMAL, true, new OutputFormatter(true));
+    $display = new CloningProgressDisplay($section(), $section(), $overall = $section(), phaseDetail: false);
 
     $display->start(2);
     expect(sectionText($overall))->toMatch('/^\n  tables  \[[^\]]+\] 0\/2$/');
@@ -197,8 +227,37 @@ it('counts finished tables on the overall bar', function (): void {
     $display->advanceOverall();
     expect(sectionText($overall))->toContain('1/2');
 
+    $display->advanceOverall();
+    expect(sectionText($overall))->toContain('2/2');
+
     $display->finish();
     expect(sectionText($overall))->toContain('2/2');
+});
+
+it('shows where the run stopped instead of filling the overall bar', function (): void {
+    [$display, $table, $overall] = makeProgressDisplay();
+    $display->start(3);
+    $display->startTable('users');
+    $display->finishTable(transferred: true);
+    $display->advanceOverall();
+    $display->startTable('orders'); // still transferring when the run stops
+
+    $display->finish();
+
+    expect(sectionText($table))->toBe('  orders  stopped after 0 rows')
+        ->and(sectionText($overall))->toBe("\n  tables  stopped at 1/3");
+});
+
+it('leaves the last finished table as it is when the run completes', function (): void {
+    [$display, $table] = makeProgressDisplay();
+    $display->start(1);
+    $display->startTable('users');
+    $display->finishTable(transferred: true);
+    $display->advanceOverall();
+
+    $display->finish();
+
+    expect(sectionText($table))->toMatch('/^  users  \[=+\]    0  $/');
 });
 
 it('keeps log lines in their own section above the bars', function (): void {

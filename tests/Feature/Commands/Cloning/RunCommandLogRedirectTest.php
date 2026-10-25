@@ -7,6 +7,8 @@ use App\Logging\AuditBuffer;
 use Illuminate\Log\Logger;
 use Illuminate\Support\Facades\Log;
 use Monolog\Handler\StreamHandler;
+use Monolog\Handler\TestHandler;
+use Monolog\Handler\WhatFailureGroupHandler;
 use Monolog\Level;
 use Monolog\Logger as Monolog;
 use Psr\Log\NullLogger;
@@ -39,25 +41,33 @@ beforeEach(function (): void {
     app(AuditBuffer::class)->clear();
 });
 
-it('moves warnings from stderr into the section until restored', function (): void {
+it('moves stderr records into the section, at the stderr level, until restored', function (): void {
     $stderr = stderrLogHandler();
     $levelBefore = $stderr->getLevel();
+    $stderr->setLevel(Level::Info); // as at -v
     $section = new BufferedOutput;
 
     $restore = redirectRunLogs($section);
 
     expect($stderr->getLevel())->toBe(Level::Emergency);
 
-    Log::warning('row_skipped', ['table' => 'users']);
+    Log::warning('auto_increment_correction_failed', ['table' => 'users']);
     Log::info('table_transferred', ['table' => 'users']);
+    Log::debug('chunk_fetched');
+    Log::warning('row_skipped', ['table' => 'users']); // listed per table as skip groups instead
 
-    expect($section->fetch())->toBe("  WARNING: row_skipped {\"table\":\"users\"}\n");
+    expect($section->fetch())->toBe(
+        "  WARNING: auto_increment_correction_failed {\"table\":\"users\"}\n"
+        ."  INFO: table_transferred {\"table\":\"users\"}\n"
+    );
     // The audit trail still records every event.
-    expect(array_column(app(AuditBuffer::class)->records(), 'event'))->toBe(['row_skipped', 'table_transferred']);
+    expect(array_column(app(AuditBuffer::class)->records(), 'event'))
+        ->toBe(['auto_increment_correction_failed', 'table_transferred', 'chunk_fetched', 'row_skipped']);
 
     $restore();
 
-    expect($stderr->getLevel())->toBe($levelBefore);
+    expect($stderr->getLevel())->toBe(Level::Info);
+    $stderr->setLevel($levelBefore);
 
     Log::error('audit_delivery_failed');
     expect($section->fetch())->toBe('');
@@ -71,4 +81,22 @@ it('leaves logging alone when the default logger is not Monolog-backed', functio
     $restore();
 
     expect($section->fetch())->toBe('');
+});
+
+it('leaves logging alone when the stack has no plain stderr handler', function (): void {
+    // E.g. ignore_exceptions wraps every handler in a WhatFailureGroupHandler.
+    $wrapped = new TestHandler;
+    $monolog = new Monolog('clonio', [new WhatFailureGroupHandler([$wrapped])]);
+    Log::shouldReceive('driver')->andReturn(new Logger($monolog));
+    $section = new BufferedOutput;
+
+    $restore = redirectRunLogs($section);
+
+    expect($monolog->getHandlers())->toHaveCount(1);
+    $monolog->warning('auto_increment_correction_failed');
+    expect($section->fetch())->toBe('')
+        ->and($wrapped->hasWarningRecords())->toBeTrue();
+
+    $restore();
+    expect($monolog->getHandlers())->toHaveCount(1);
 });

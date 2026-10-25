@@ -26,6 +26,8 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Monolog\Handler\StreamHandler;
+use Monolog\Level;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\ConsoleOutput;
@@ -1369,16 +1371,27 @@ it('ignores a row limit for the full strategy in a dry run', function (): void {
  *
  * @param  resource  $stream
  */
-function g1_console(mixed $stream, bool $decorated = true, int $verbosity = OutputInterface::VERBOSITY_VERBOSE): ConsoleOutput
+function g1_console(mixed $stream, bool $decorated = true, int $verbosity = OutputInterface::VERBOSITY_VERBOSE, ?bool $stderrDecorated = null): ConsoleOutput
 {
-    return new class($stream, $decorated, $verbosity) extends ConsoleOutput
+    return new class($stream, $decorated, $verbosity, $stderrDecorated ?? $decorated) extends ConsoleOutput
     {
-        public function __construct(mixed $stream, bool $decorated, int $verbosity)
+        public function __construct(mixed $stream, bool $decorated, int $verbosity, bool $stderrDecorated)
         {
             StreamOutput::__construct($stream, $verbosity, $decorated);
-            $this->setErrorOutput(new StreamOutput($stream, $verbosity, $decorated));
+            $this->setErrorOutput(new StreamOutput($stream, $verbosity, $stderrDecorated));
         }
     };
+}
+
+/** The stderr handler of the default log stack. */
+function g1_stderr_handler(): StreamHandler
+{
+    $handlers = array_values(array_filter(
+        Log::driver()->getLogger()->getHandlers(),
+        static fn (object $h): bool => $h instanceof StreamHandler && $h->getUrl() === 'php://stderr',
+    ));
+
+    return $handlers[0];
 }
 
 /** Run cloning:run directly against the given output. */
@@ -1447,7 +1460,8 @@ it('drives live progress bars on a decorated console and logs above them', funct
         $users->setStatus(TableRunPhase::Loop);
         $users->recordLoop(new StatsLoopData(10, 0.25, 0.25, 0.5, 1.0, 9, 1));
         $a[14]('users', $users); // onTableProgress
-        Log::warning('row_skipped', ['table' => 'users']);
+        Log::warning('row_skipped', ['table' => 'users']); // shown as the skip group instead
+        Log::warning('table_column_note', ['table' => 'users']);
         $a[7]('users', TableRunStatus::Transferred, 9, 1, [new SkippedRow('users', 0, 0, null, 'dup')]);
         $screens['users'] = g1_screen($stream);
 
@@ -1473,31 +1487,36 @@ it('drives live progress bars on a decorated console and logs above them', funct
     Log::warning('after_bars');
 
     $final = g1_screen($stream);
-    // Below the four pre-run step lines: the log, then the per-table bar. The
-    // overall bar beneath is left out, its redraws are throttled by time.
-    $bars = static fn (array $screen): array => array_slice($screen, 4, -3);
+    // Below the four pre-run step lines: the log, the per-table bar, the overall bar.
+    $bars = static fn (array $screen): array => array_slice($screen, 4);
 
     expect($code)->toBe(0)
         ->and($captured[13])->toBeTrue() // trackRowTotals
         ->and($final[0])->toStartWith('  Validating YAML ')
         ->and($bars($screens['users']))->toBe([
-            '  WARNING: row_skipped {"table":"users"}',
+            '  WARNING: table_column_note {"table":"users"}',
             '  ✓  users  (9 rows, 1 skipped)',
             '     └ 1× dup',
-            '  users  [============================] 20/~20 (100%)  ETA 1s · 100000.0 s/M',
+            '  users  [============================]   10  100000.0 s/M',
+            '',
+            '  tables  [=====>----------------------] 1/5',
+            '',
         ])
         ->and($bars($screens['orders']))->toBe([
-            '  WARNING: row_skipped {"table":"users"}',
+            '  WARNING: table_column_note {"table":"users"}',
             '  ✓  users  (9 rows, 1 skipped)',
             '     └ 1× dup',
             '  ✓  items  (1,500 rows)',
             '  ?  ghost  — not found in source, skipped',
             '  S  broken  — schema replication failed, skipped',
             '  ✗  orders  — transfer failed',
-            '  orders  [============================]    5  200000.0 s/M',
+            '  orders  stopped after 5 rows',
+            '',
+            '  tables  [============================] 5/5',
+            '',
         ])
-        ->and($final)->toContain('  tables  [============================] 5/5')
         ->and(implode("\n", $final))->not->toContain('after_bars')
+        ->and(implode("\n", $final))->not->toContain('row_skipped')
         ->and(implode("\n", $final))->not->toContain('timing summary');
 });
 
@@ -1594,4 +1613,67 @@ it('passes no table progress callback in CI, even at -vvv', function (): void {
     g1_call(['file' => 't.yaml', '--target' => 'staging', '--ci' => true, '-vvv' => true]);
 
     expect($captured[14])->toBeNull();
+});
+
+it('keeps logging to stderr when stderr is not the terminal the bars run on', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $stream = fopen('php://memory', 'w+');
+    $levelDuringRun = null;
+    g1_bind(run: function (array $a) use (&$levelDuringRun): RunResultData {
+        $a[12](1);
+        $levelDuringRun = g1_stderr_handler()->getLevel();
+        $a[10]('users');
+        $a[7]('users', TableRunStatus::Transferred, 3, 0, []);
+
+        return g1_result();
+    });
+
+    $code = g1_run_on(g1_console($stream, stderrDecorated: false));
+
+    expect($code)->toBe(0)
+        ->and($levelDuringRun)->not->toBe(Level::Emergency)
+        ->and(implode("\n", g1_screen($stream)))->toContain('tables  [');
+});
+
+it('clears the bars and hands logging back when the transfer throws', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $stream = fopen('php://memory', 'w+');
+    $levelBefore = g1_stderr_handler()->getLevel();
+    g1_bind(run: function (array $a): RunResultData {
+        $a[12](2);
+        $a[10]('users');
+        expect(g1_stderr_handler()->getLevel())->toBe(Level::Emergency);
+
+        throw new RuntimeException('target connection lost');
+    });
+
+    expect(fn (): int => g1_run_on(g1_console($stream)))->toThrow(RuntimeException::class, 'target connection lost');
+
+    Log::warning('after_failure');
+
+    $screen = implode("\n", g1_screen($stream));
+    expect(g1_stderr_handler()->getLevel())->toBe($levelBefore)
+        ->and($screen)->toContain('  users  stopped after 0 rows')
+        ->and($screen)->toContain('  tables  stopped at 0/2')
+        ->and($screen)->not->toContain('after_failure');
+});
+
+it('shows where the run stopped when it ends before every table is done', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $stream = fopen('php://memory', 'w+');
+    g1_bind(run: function (array $a): RunResultData {
+        $a[12](3);
+        $a[10]('users');
+        $a[7]('users', TableRunStatus::Failed, 0, 0, []); // --break-on-failure stops here
+
+        return g1_result(success: false);
+    });
+
+    g1_run_on(g1_console($stream), ['--break-on-failure' => true]);
+
+    $screen = implode("\n", g1_screen($stream));
+    expect($screen)->toContain('  ✗  users  — transfer failed')
+        ->and($screen)->toContain('  users  stopped after 0 rows')
+        ->and($screen)->toContain('  tables  stopped at 1/3')
+        ->and($screen)->not->toContain('tables  [');
 });

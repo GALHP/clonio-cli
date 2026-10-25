@@ -20,12 +20,21 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class ConsoleOutputHandler extends AbstractProcessingHandler
 {
+    /**
+     * @param  list<string>  $ignoredMessages  Log messages (event names) to leave out.
+     */
     public function __construct(
         private readonly OutputInterface $output,
         int|string|Level $level = Level::Warning,
         bool $bubble = true,
+        private readonly array $ignoredMessages = [],
     ) {
         parent::__construct($level, $bubble);
+    }
+
+    public function isHandling(LogRecord $record): bool
+    {
+        return parent::isHandling($record) && ! in_array($record->message, $this->ignoredMessages, true);
     }
 
     protected function write(LogRecord $record): void

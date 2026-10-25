@@ -68,7 +68,6 @@ it('reports a zero ETA once every row is processed', function (): void {
     ));
 
     expect($stats->hasKnownTotal)->toBeTrue();
-    expect($stats->percentComplete)->toBe(100.0);
     expect($stats->estimatedSecondsRemaining)->toBe(0.0);
 });
 
@@ -87,7 +86,6 @@ it('treats the total as unknown once the rows processed overrun an estimate', fu
 
     expect($stats->totalRowsEstimated)->toBeTrue();
     expect($stats->hasKnownTotal)->toBeFalse();
-    expect($stats->percentComplete)->toBeNull();
     expect($stats->estimatedSecondsRemaining)->toBeNull();
 });
 

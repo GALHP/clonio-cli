@@ -50,13 +50,6 @@ final class StatsTableTransferData
         get => $this->totalRows > 0 && $this->rowsProcessed <= $this->totalRows;
     }
 
-    /** Completion ratio in the range [0, 100], or null when the total is unknown. */
-    public ?float $percentComplete {
-        get => $this->hasKnownTotal
-            ? ($this->rowsProcessed / $this->totalRows) * 100.0
-            : null;
-    }
-
     /**
      * Estimated wall-clock seconds until this table finishes, from the smoothed
      * loop pace × outstanding rows. Null while the total or the pace is unknown.

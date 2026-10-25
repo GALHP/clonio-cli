@@ -71,3 +71,13 @@ it('keeps line breaks inside a logged message', function (): void {
 
     expect($output->fetch())->toBe("  ERROR: table_transfer_failed\nSQLSTATE[23000]\n");
 });
+
+it('leaves out ignored messages', function (): void {
+    $output = new BufferedOutput;
+    $handler = new ConsoleOutputHandler($output, ignoredMessages: ['row_skipped']);
+
+    expect($handler->handle(consoleLogRecord(Level::Warning, 'row_skipped')))->toBeFalse();
+    $handler->handle(consoleLogRecord(Level::Warning, 'table_not_found'));
+
+    expect($output->fetch())->toBe("  WARNING: table_not_found\n");
+});
