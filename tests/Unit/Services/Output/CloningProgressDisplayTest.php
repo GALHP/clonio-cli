@@ -116,6 +116,17 @@ it('falls back to a plain row counter without ETA once an estimate is overrun', 
     expect(sectionText($table))->toMatch('/^  users  \[[^\]]+\]   16  125000\.0 s\/M$/');
 });
 
+it('treats a table without a phase yet as transferring', function (): void {
+    [$display, $table] = makeProgressDisplay();
+    $display->startTable('users');
+
+    $stats = new StatsTableTransferData;
+    $stats->setTotalRows(1);
+    $display->advanceTable($stats);
+
+    expect(sectionText($table))->toMatch('/^  users  \[[^\]]+\] 0\/1 \(  0%\)  $/');
+});
+
 it('switches to the determinate bar right away, before any chunk pace is known', function (): void {
     [$display, $table] = makeProgressDisplay();
     $display->startTable('users');
@@ -135,11 +146,11 @@ it('adds the per-phase pace breakdown in phase-detail mode', function (): void {
     $stats = new StatsTableTransferData;
     $stats->setTotalRows(10);
     $stats->setStatus(TableRunPhase::Insert);
-    $stats->recordLoop(progressLoop(rows: 2, seconds: 0.000002));
+    $stats->recordLoop(progressLoop(rows: 2, seconds: 0.000008));
     $display->advanceTable($stats);
 
-    // 1 µs/row overall = 1 s/M; select and transform 0.25 µs/row = 250 ms/M.
-    expect(sectionText($table))->toContain('ETA 0s · all 1.0 s/M · sel 250.0 ms/M · tr 250.0 ms/M · ins 500.0 ms/M');
+    // 4 µs/row overall = 4 s/M; select and transform 1 µs/row, insert 2 µs/row.
+    expect(sectionText($table))->toContain('ETA 0s · all 4.0 s/M · sel 1.0 s/M · tr 1.0 s/M · ins 2.0 s/M');
 });
 
 it('formats the ETA in minutes and hours', function (int $totalRows, string $eta): void {
@@ -159,6 +170,7 @@ it('formats the ETA in minutes and hours', function (int $totalRows, string $eta
     'minutes and seconds' => [1000, '1m 39s'],
     'just under an hour' => [36_000, '59m 59s'],
     'one hour' => [36_010, '1h 0m'],
+    'just under two hours' => [71_990, '1h 59m'],
     'hours and minutes' => [100_000, '2h 46m'],
 ]);
 
@@ -240,4 +252,17 @@ it('renders no timing summary for a table that never ran a chunk', function (): 
     CloningProgressDisplay::renderTimingSummary($output, $stats);
 
     expect($output->fetch())->toBe('');
+});
+
+it('shows a pace below one second per million rows in milliseconds', function (): void {
+    [$display, $table] = makeProgressDisplay();
+    $display->startTable('users');
+
+    $stats = new StatsTableTransferData;
+    $stats->setTotalRows(10);
+    $stats->setStatus(TableRunPhase::Insert);
+    $stats->recordLoop(progressLoop(rows: 2, seconds: 0.000001)); // 0.5 µs/row
+    $display->advanceTable($stats);
+
+    expect(sectionText($table))->toContain(' · 500.0 ms/M');
 });

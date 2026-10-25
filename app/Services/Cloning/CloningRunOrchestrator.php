@@ -414,9 +414,10 @@ class CloningRunOrchestrator
                 return [0, 0, false, null, []];
             }
 
+            $stats->setStatus(TableRunPhase::Loop);
+
             do {
                 $tOverall = microtime(true);
-                $stats->setStatus(TableRunPhase::Select);
                 $tSelect = microtime(true);
                 /** @var list<object> $chunk */
                 $chunk = DB::connection($sourceConn)->select(
@@ -428,7 +429,6 @@ class CloningRunOrchestrator
                     break; // @pest-mutate-ignore: BreakToContinue
                 }
 
-                $stats->setStatus(TableRunPhase::Transform);
                 $tTransform = microtime(true);
                 $transformed = $this->transformChunk($chunk, $tableConfig, $engine, $keyRemapping, $keyRemappingConfig);
                 $transformSeconds = microtime(true) - $tTransform;
@@ -436,7 +436,6 @@ class CloningRunOrchestrator
                 $chunkRowsAttempted = count($transformed);
                 $loopRowsDone = 0;
                 $loopRowsSkipped = 0;
-                $stats->setStatus(TableRunPhase::Insert);
                 $insertStart = microtime(true);
                 // Bulk insert into target
                 try {

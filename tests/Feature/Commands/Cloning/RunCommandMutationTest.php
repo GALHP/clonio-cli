@@ -1364,59 +1364,234 @@ it('ignores a row limit for the full strategy in a dry run', function (): void {
 
 // ─── Live progress bars ───────────────────────────────────────────────────────
 
+/**
+ * A real ConsoleOutput (sections need one) writing to a memory stream.
+ *
+ * @param  resource  $stream
+ */
+function g1_console(mixed $stream, bool $decorated = true, int $verbosity = OutputInterface::VERBOSITY_VERBOSE): ConsoleOutput
+{
+    return new class($stream, $decorated, $verbosity) extends ConsoleOutput
+    {
+        public function __construct(mixed $stream, bool $decorated, int $verbosity)
+        {
+            StreamOutput::__construct($stream, $verbosity, $decorated);
+            $this->setErrorOutput(new StreamOutput($stream, $verbosity, $decorated));
+        }
+    };
+}
+
+/** Run cloning:run directly against the given output. */
+function g1_run_on(OutputInterface $output, array $params = []): int
+{
+    $command = app(RunCommand::class);
+    $command->setLaravel(app());
+
+    return $command->run(new ArrayInput(['file' => 't.yaml', '--target' => 'staging', ...$params], $command->getDefinition()), $output);
+}
+
+/**
+ * Replay the stream like a terminal: apply the cursor-up / erase sequences that
+ * console sections and progress bars emit, and return the visible lines.
+ *
+ * @param  resource  $stream
+ * @return list<string>
+ */
+function g1_screen(mixed $stream): array
+{
+    rewind($stream);
+    $raw = (string) stream_get_contents($stream);
+    fseek($stream, 0, SEEK_END);
+
+    $lines = [''];
+    $row = 0;
+    $col = 0;
+    $tokens = preg_split('/(\e\][^\e]*\e\\\\|\e\[[0-9;?]*[A-Za-z]|\n|\r)/', $raw, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
+
+    foreach ($tokens as $token) {
+        if ($token === "\n") {
+            $row++;
+            $col = 0;
+            $lines[$row] ??= '';
+        } elseif ($token === "\r") {
+            $col = 0;
+        } elseif (preg_match('/^\e\[(\d*)A$/', $token, $m) === 1) {
+            $row = max(0, $row - (int) ($m[1] === '' ? 1 : $m[1]));
+        } elseif ($token === "\e[K" || $token === "\e[0K" || $token === "\e[0J" || $token === "\e[J") {
+            $lines[$row] = mb_substr($lines[$row], 0, $col);
+            if (str_ends_with($token, 'J')) {
+                $lines = array_slice($lines, 0, $row + 1);
+            }
+        } elseif (! str_starts_with($token, "\e")) {
+            $line = str_pad($lines[$row], $col);
+            $lines[$row] = mb_substr($line, 0, $col).$token.mb_substr($line, $col + mb_strlen($token));
+            $col += mb_strlen($token);
+        }
+    }
+
+    return array_map(rtrim(...), $lines);
+}
+
 it('drives live progress bars on a decorated console and logs above them', function (): void {
     Storage::disk('local')->put('t.yaml', g1_yaml());
+    $stream = fopen('php://memory', 'w+');
     $captured = [];
-    g1_bind(run: function (array $a) use (&$captured): RunResultData {
+    $screens = [];
+    g1_bind(run: function (array $a) use (&$captured, &$screens, $stream): RunResultData {
         $captured = $a;
-        $a[12](4); // onStart
+        $a[12](5); // onStart
+
         $a[10]('users'); // onTableStart
-
-        $stats = new StatsTableTransferData;
-        $stats->setStatus(TableRunPhase::Insert);
-        $stats->setTotalRows(10, estimated: true);
-        $stats->recordLoop(new StatsLoopData(10, 0.1, 0.1, 0.3, 0.5, 9, 1));
-        $a[14]('users', $stats); // onTableProgress
-
+        $users = new StatsTableTransferData;
+        $users->setTotalRows(20, estimated: true);
+        $users->setStatus(TableRunPhase::Loop);
+        $users->recordLoop(new StatsLoopData(10, 0.25, 0.25, 0.5, 1.0, 9, 1));
+        $a[14]('users', $users); // onTableProgress
         Log::warning('row_skipped', ['table' => 'users']);
         $a[7]('users', TableRunStatus::Transferred, 9, 1, [new SkippedRow('users', 0, 0, null, 'dup')]);
-        $a[10]('orders');
-        $a[7]('orders', TableRunStatus::Failed, 0, 0, []);
+        $screens['users'] = g1_screen($stream);
+
+        $a[10]('items');
+        $a[7]('items', TableRunStatus::Transferred, 1500, 0, []);
         $a[7]('ghost', TableRunStatus::NotFound, 0, 0, []);
         $a[7]('broken', TableRunStatus::SkippedBySchemaFailure, 0, 0, []);
+
+        $a[10]('orders');
+        $orders = new StatsTableTransferData;
+        $orders->setStatus(TableRunPhase::Loop);
+        $orders->recordLoop(new StatsLoopData(5, 0.25, 0.25, 0.5, 1.0, 5, 0));
+        $a[14]('orders', $orders);
+        $a[7]('orders', TableRunStatus::Failed, 0, 0, []);
+        $screens['orders'] = g1_screen($stream);
 
         return g1_result();
     });
 
-    // A real ConsoleOutput (sections need one), decorated, writing to memory.
-    $stream = fopen('php://memory', 'w+');
-    $output = new class($stream) extends ConsoleOutput
-    {
-        public function __construct(mixed $stream)
-        {
-            StreamOutput::__construct($stream, OutputInterface::VERBOSITY_VERBOSE, true);
-            $this->setErrorOutput(new StreamOutput($stream, OutputInterface::VERBOSITY_VERBOSE, true));
-        }
-    };
+    $code = g1_run_on(g1_console($stream));
 
-    $command = app(RunCommand::class);
-    $command->setLaravel(app());
-    $code = $command->run(new ArrayInput(['file' => 't.yaml', '--target' => 'staging'], $command->getDefinition()), $output);
+    // Logging is handed back to stderr once the bars are gone.
+    Log::warning('after_bars');
 
-    rewind($stream);
-    $screen = (string) preg_replace('/\e\[[0-9;]*[A-Za-z]/', '', (string) stream_get_contents($stream));
+    $final = g1_screen($stream);
+    // Below the four pre-run step lines: the log, then the per-table bar. The
+    // overall bar beneath is left out, its redraws are throttled by time.
+    $bars = static fn (array $screen): array => array_slice($screen, 4, -3);
 
     expect($code)->toBe(0)
         ->and($captured[13])->toBeTrue() // trackRowTotals
-        ->and($screen)->toContain('users  [')
-        ->and($screen)->toContain('10/~10 (100%)')
-        ->and($screen)->toContain('WARNING: row_skipped {"table":"users"}')
-        ->and($screen)->toContain('  ✓  users  (9 rows, 1 skipped)')
-        ->and($screen)->toContain('     └ 1× dup')
-        ->and($screen)->toContain('  ✗  orders  — transfer failed')
-        ->and($screen)->toContain('  ?  ghost  — not found in source, skipped')
-        ->and($screen)->toContain('  S  broken  — schema replication failed, skipped')
-        ->and($screen)->toContain('tables  [')
-        ->and($screen)->toContain('4/4')
-        ->and($screen)->not->toContain('users ...');
+        ->and($final[0])->toStartWith('  Validating YAML ')
+        ->and($bars($screens['users']))->toBe([
+            '  WARNING: row_skipped {"table":"users"}',
+            '  ✓  users  (9 rows, 1 skipped)',
+            '     └ 1× dup',
+            '  users  [============================] 20/~20 (100%)  ETA 1s · 100000.0 s/M',
+        ])
+        ->and($bars($screens['orders']))->toBe([
+            '  WARNING: row_skipped {"table":"users"}',
+            '  ✓  users  (9 rows, 1 skipped)',
+            '     └ 1× dup',
+            '  ✓  items  (1,500 rows)',
+            '  ?  ghost  — not found in source, skipped',
+            '  S  broken  — schema replication failed, skipped',
+            '  ✗  orders  — transfer failed',
+            '  orders  [============================]    5  200000.0 s/M',
+        ])
+        ->and($final)->toContain('  tables  [============================] 5/5')
+        ->and(implode("\n", $final))->not->toContain('after_bars')
+        ->and(implode("\n", $final))->not->toContain('timing summary');
+});
+
+it('keeps the step renderer when live bars are not possible', function (bool $decorated, array $params, string $expectedLine): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $stream = fopen('php://memory', 'w+');
+    $captured = [];
+    g1_bind(run: function (array $a) use (&$captured): RunResultData {
+        $captured = $a;
+        if ($a[10] !== null) {
+            $a[10]('users');
+        }
+        $a[7]('users', TableRunStatus::Transferred, 3, 0, []);
+
+        return g1_result();
+    });
+
+    $code = g1_run_on(g1_console($stream, $decorated, OutputInterface::VERBOSITY_VERBOSE), $params);
+    $screen = implode("\n", g1_screen($stream));
+
+    expect($code)->toBe(0)
+        ->and($captured[12])->toBeNull() // onStart
+        ->and($captured[13])->toBeFalse() // trackRowTotals
+        ->and($captured[14])->toBeNull() // onTableProgress
+        ->and($screen)->toContain($expectedLine)
+        ->and($screen)->not->toContain('tables  [');
+})->with([
+    'plain console' => [false, [], '    users (3 rows) ✓'],
+    'decorated console in CI' => [true, ['--ci' => true], ''],
+]);
+
+it('shows no live bars on a decorated console without -v', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $stream = fopen('php://memory', 'w+');
+    g1_bind(run: function (array $a): RunResultData {
+        expect($a[12])->toBeNull();
+        $a[7]('users', TableRunStatus::Transferred, 3, 0, []);
+
+        return g1_result();
+    });
+
+    expect(g1_run_on(g1_console($stream, verbosity: OutputInterface::VERBOSITY_NORMAL)))->toBe(0)
+        ->and(g1_screen($stream)[0])->toBe('.');
+});
+
+it('needs a console output with sections for live bars', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    g1_bind(run: function (array $a): RunResultData {
+        expect($a[12])->toBeNull();
+
+        return g1_result();
+    });
+
+    $output = new BufferedOutput(OutputInterface::VERBOSITY_VERBOSE, decorated: true);
+
+    expect(g1_run_on($output))->toBe(0);
+});
+
+it('prints the timing summary only at -vvv and only for tables with timings', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $captured = [];
+    g1_bind(run: function (array $a) use (&$captured): RunResultData {
+        $captured = $a;
+        $a[10]('users');
+        $a[7]('users', TableRunStatus::Failed, 0, 0, []); // never reported progress
+
+        $a[10]('orders');
+        $orders = new StatsTableTransferData;
+        $orders->recordLoop(new StatsLoopData(2, 0.25, 0.25, 0.5, 1.0, 2, 0));
+        $a[14]('orders', $orders);
+        $a[7]('orders', TableRunStatus::Transferred, 2, 0, []);
+
+        return g1_result();
+    });
+
+    [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '-vvv' => true]);
+
+    expect($code)->toBe(0)
+        ->and($captured[13])->toBeFalse()
+        ->and($captured[14])->toBeInstanceOf(Closure::class)
+        ->and($out)->toContain("    users ✗\n    orders ...\n    orders (2 rows) ✓\n      ── timing summary ──\n")
+        ->and(substr_count($out, 'timing summary'))->toBe(1);
+});
+
+it('passes no table progress callback in CI, even at -vvv', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $captured = [];
+    g1_bind(run: function (array $a) use (&$captured): RunResultData {
+        $captured = $a;
+
+        return g1_result();
+    });
+
+    g1_call(['file' => 't.yaml', '--target' => 'staging', '--ci' => true, '-vvv' => true]);
+
+    expect($captured[14])->toBeNull();
 });

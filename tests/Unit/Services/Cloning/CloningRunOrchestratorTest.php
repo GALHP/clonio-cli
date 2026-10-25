@@ -735,7 +735,7 @@ it('announces the one-shot phases via onTableProgress before the row loop', func
     $source = makeOrchestratorConnection('source');
     $target = makeOrchestratorConnection('target');
     $schema = makeOrchestratorSchema();
-    $config = makeOrchestratorConfig(clear: ClearMode::Truncate);
+    $config = makeOrchestratorConfig(clear: ClearMode::Truncate, disableFk: true);
 
     DB::shouldReceive('connection')->andReturnSelf();
     DB::shouldReceive('selectOne')->andReturn((object) ['c' => 1]);
@@ -747,6 +747,7 @@ it('announces the one-shot phases via onTableProgress before the row loop', func
 
     /** @var list<TableRunPhase> $phases */
     $phases = [];
+    $stats = null;
     $orchestrator = makeOrchestrator();
     $orchestrator->run(
         $config,
@@ -758,20 +759,29 @@ it('announces the one-shot phases via onTableProgress before the row loop', func
         [],
         static function (): void {},
         trackRowTotals: true,
-        onTableProgress: static function (string $tbl, StatsTableTransferData $stats) use (&$phases): void {
+        onTableProgress: static function (string $tbl, StatsTableTransferData $s) use (&$phases, &$stats): void {
             // Read the phase at emit time (the stats object is mutated in place).
-            if ($stats->status instanceof TableRunPhase) {
-                $phases[] = $stats->status;
-            }
+            $phases[] = $s->status;
+            $stats = $s;
         },
     );
 
-    // Counting rows is announced first (before the count), then clearing the target,
-    // both ahead of the per-chunk loop phase (Insert). No FK-disable phase here.
-    expect($phases[0])->toBe(TableRunPhase::EstimatingRows);
-    expect($phases[1])->toBe(TableRunPhase::Clear);
-    expect($phases[0]->isOneShot())->toBeTrue();
-    expect($phases[2])->toBe(TableRunPhase::Insert);
+    // Each one-shot phase is announced as it starts, then each chunk reports
+    // under the loop phase.
+    expect($phases)->toBe([
+        TableRunPhase::EstimatingRows,
+        TableRunPhase::DisableFkChecks,
+        TableRunPhase::Clear,
+        TableRunPhase::Loop,
+    ]);
+
+    // Every phase that ran recorded one plausible wall-clock sample.
+    foreach (TableRunPhase::cases() as $phase) {
+        $aggregate = $stats->aggregate($phase);
+        expect($aggregate->count)->toBe(1)
+            ->and($aggregate->sum)->toBeGreaterThanOrEqual(0.0)
+            ->and($aggregate->sum)->toBeLessThan(60.0);
+    }
 });
 
 it('skips the row estimate for schema-only tables', function (): void {

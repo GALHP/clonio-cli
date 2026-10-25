@@ -62,3 +62,12 @@ it('falls back to the bare message when a formatter does not produce a string', 
 
     expect($output->fetch())->toBe("  row_skipped\n");
 });
+
+it('keeps line breaks inside a logged message', function (): void {
+    $output = new BufferedOutput;
+    $handler = new ConsoleOutputHandler($output);
+
+    $handler->handle(consoleLogRecord(Level::Error, "table_transfer_failed\nSQLSTATE[23000]"));
+
+    expect($output->fetch())->toBe("  ERROR: table_transfer_failed\nSQLSTATE[23000]\n");
+});

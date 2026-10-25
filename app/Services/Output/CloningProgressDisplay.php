@@ -42,8 +42,8 @@ final readonly class CloningProgressDisplay
         private bool $phaseDetail,
         float $minSecondsBetweenRedraws = 1 / 25,
     ) {
-        $this->tableBar = new ProgressBar($tableSection, 0, $minSecondsBetweenRedraws);
-        $this->overallBar = new ProgressBar($overallSection, 0, $minSecondsBetweenRedraws);
+        $this->tableBar = new ProgressBar($tableSection, minSecondsBetweenRedraws: $minSecondsBetweenRedraws);
+        $this->overallBar = new ProgressBar($overallSection, minSecondsBetweenRedraws: $minSecondsBetweenRedraws);
         // Leading newline keeps a blank line between the per-table bar and the
         // overall bar (the section owns both lines, so it stays stable on redraw).
         $this->overallBar->setFormat("\n  <info>tables</info>  [%bar%] %current%/%max%");
@@ -98,7 +98,7 @@ final readonly class CloningProgressDisplay
 
         if ($switchesFormat) {
             $this->tableBar->setMaxSteps($max);
-            $this->tableBar->setFormat($max > 0 ? self::DETERMINATE_FORMAT : self::INDETERMINATE_FORMAT);
+            $this->tableBar->setFormat($stats->hasKnownTotal ? self::DETERMINATE_FORMAT : self::INDETERMINATE_FORMAT);
         }
 
         $this->tableBar->setMessage($stats->totalRowsEstimated ? '~' : '', 'approx');
@@ -147,12 +147,13 @@ final readonly class CloningProgressDisplay
                 $rows[] = new TableSeparator;
             }
 
+            // count > 0 here, so min/max/average are always set.
             $rows[] = [
                 $phase->value,
-                (string) $agg->count,
-                self::formatSeconds($agg->min ?? 0.0),
-                self::formatSeconds($agg->max ?? 0.0),
-                self::formatSeconds($agg->averageSeconds ?? 0.0),
+                $agg->count,
+                self::formatSeconds($agg->min ?? 0.0), // @pest-mutate-ignore: IncrementFloat,DecrementFloat
+                self::formatSeconds($agg->max ?? 0.0), // @pest-mutate-ignore: IncrementFloat,DecrementFloat
+                self::formatSeconds($agg->averageSeconds ?? 0.0), // @pest-mutate-ignore: IncrementFloat,DecrementFloat
                 self::formatSeconds($agg->sum),
                 self::formatThroughput($agg->pacePerMillion),
             ];
