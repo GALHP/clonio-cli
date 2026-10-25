@@ -12,7 +12,6 @@ use App\Data\Cloning\DryRunTableData;
 use App\Data\Cloning\KeyRemappingConfigData;
 use App\Data\Cloning\StatsTableTransferData;
 use App\Data\Cloning\TableCloningConfigData;
-use App\Data\Cloning\TableRunPhase;
 use App\Data\Cloning\TableRunResultData;
 use App\Data\Cloning\TableRunStatus;
 use App\Data\ConnectionData;
@@ -43,6 +42,7 @@ use App\Services\Cloning\KeyRemappingService;
 use App\Services\Cloning\SkippedRow;
 use App\Services\Config\ConfigService;
 use App\Services\Database\DatabaseConnectionService;
+use App\Services\Output\CloningProgressDisplay;
 use App\Services\Output\VerboseStepRenderer;
 use App\Services\Schema\SchemaDiffService;
 use App\Services\Schema\SchemaInspector;
@@ -57,10 +57,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use LaravelZero\Framework\Commands\Command;
 use RuntimeException;
-use Symfony\Component\Console\Helper\ProgressBar;
-use Symfony\Component\Console\Helper\Table;
-use Symfony\Component\Console\Helper\TableSeparator;
-use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Yaml\Yaml;
@@ -475,26 +471,13 @@ class RunCommand extends Command
         $dotColumn = 0;
         $maxDotColumns = 70;
 
-        $overallBar = null;
-        $tableBar = null;
-        $logSection = null;
+        $progress = $showProgress
+            ? CloningProgressDisplay::forConsole($out, phaseDetail: $isVeryVerbose)
+            : null;
 
         // Live stats of the table currently transferring, kept for its terminal
         // event (the `-vvv` timing summary) and then reset.
         $currentTimings = null;
-
-        if ($showProgress) {
-            // Live bars own the terminal: every write must go through a section, or
-            // Symfony's cursor math desyncs and re-prints the bars. Sections created
-            // first render higher up — the results log on top, the per-table bar in
-            // the middle, the overall bar pinned at the bottom. All reused for the run.
-            $logSection = $out->section();
-            $tableBar = new ProgressBar($out->section());
-            $overallBar = new ProgressBar($out->section());
-            // Leading newline keeps a blank line between the per-table bar and the
-            // overall bar (the section owns both lines, so it stays stable on redraw).
-            $overallBar->setFormat("\n  <info>tables</info>  [%bar%] %current%/%max%");
-        }
 
         $dumpSink = $targetIsDump
             ? new SqlDumpService(new DumpDialectFactory, new DumpArchiver)
@@ -508,7 +491,7 @@ class RunCommand extends Command
             skipSchema: $skipSchema,
             skipTables: $skipTables,
             onlyTables: $onlyTables,
-            onProgress: function (string $tableName, TableRunStatus $status, int $rows, int $skipped, array $skippedRows) use ($isVerbose, $isDebug, $ci, &$notFoundTables, &$schemaFailureTables, &$dotColumn, $maxDotColumns, $showProgress, $overallBar, $tableBar, $logSection, &$currentTimings): void {
+            onProgress: function (string $tableName, TableRunStatus $status, int $rows, int $skipped, array $skippedRows) use ($isVerbose, $isDebug, $ci, &$notFoundTables, &$schemaFailureTables, &$dotColumn, $maxDotColumns, $progress, &$currentTimings): void {
                 $timings = $currentTimings;
                 $currentTimings = null;
 
@@ -549,12 +532,12 @@ class RunCommand extends Command
 
                 // Verbose. Scrolling detail goes to the log section when bars are live
                 // (so it never corrupts them), otherwise straight to the console.
-                $sink = $showProgress ? $logSection : $this->output;
+                $sink = $progress instanceof CloningProgressDisplay ? $progress->log : $this->output;
 
                 // Only Transferred/Failed tables ever started a per-table bar
                 // (via onTableStart); NotFound/SchemaFailure never did.
-                if ($showProgress && ($status === TableRunStatus::Transferred || $status === TableRunStatus::Failed)) {
-                    $tableBar->finish();
+                if ($status === TableRunStatus::Transferred || $status === TableRunStatus::Failed) {
+                    $progress?->finishTable();
                 }
 
                 $suffix = $skipped > 0 ? ', '.number_format($skipped).' skipped' : '';
@@ -574,43 +557,27 @@ class RunCommand extends Command
 
                     // `-vvv`: per-table timing summary table.
                     if ($isDebug && $timings instanceof StatsTableTransferData) {
-                        $this->renderTimingSummary($sink, $timings);
+                        CloningProgressDisplay::renderTimingSummary($sink, $timings);
                     }
                 }
 
-                if ($showProgress) {
-                    $overallBar->advance();
-                }
+                $progress?->advanceOverall();
             },
             keyRemapping: $keyRemappingService,
             breakOnFailure: (bool) $this->option('break-on-failure'),
-            onTableStart: $showProgress
-                ? function (string $tableName) use ($tableBar): void {
-                    $this->startTableBar($tableBar, $tableName);
-                }
-            : null,
+            onTableStart: $progress instanceof CloningProgressDisplay ? $progress->startTable(...) : null,
             dumpSink: $dumpSink,
-            onStart: $showProgress
-                ? function (int $totalTables) use ($overallBar): void {
-                    $overallBar->setMaxSteps($totalTables);
-                    $overallBar->start();
-                }
-            : null,
-            trackRowTotals: $showProgress,
-            onTableProgress: $showProgress || ($isDebug && ! $ci)
-                ? function (string $tableName, StatsTableTransferData $stats) use (&$currentTimings, $showProgress, $tableBar, $isVeryVerbose): void {
+            onStart: $progress instanceof CloningProgressDisplay ? $progress->start(...) : null,
+            trackRowTotals: $progress instanceof CloningProgressDisplay,
+            onTableProgress: $progress instanceof CloningProgressDisplay || ($isDebug && ! $ci)
+                ? static function (string $tableName, StatsTableTransferData $stats) use (&$currentTimings, $progress): void {
                     $currentTimings = $stats;
-
-                    if ($showProgress) {
-                        $this->advanceTableBar($tableBar, $stats, $isVeryVerbose);
-                    }
+                    $progress?->advanceTable($stats);
                 }
             : null,
         );
 
-        if ($overallBar instanceof ProgressBar) {
-            $overallBar->finish();
-        }
+        $progress?->finish();
 
         $finishedAt = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 
@@ -1110,157 +1077,6 @@ class RunCommand extends Command
         }
 
         return $result;
-    }
-
-    /**
-     * (Re)initialise the nested per-table progress bar for a new table. The row
-     * total is not known yet (it arrives with the first activity or loop event),
-     * so the bar starts in the indeterminate format. The `%message%` slot carries
-     * the one-shot activity first, then per-chunk throughput.
-     */
-    private function startTableBar(ProgressBar $bar, string $tableName): void
-    {
-        $bar->setFormat('  %table%  [%bar%] %current%  %message%');
-        $bar->setMessage($tableName, 'table');
-        $bar->setMessage('', 'message');
-        $bar->start(0);
-    }
-
-    /**
-     * Advance the per-table bar from a chunk's cumulative timings. On the first
-     * event with a known row total it switches to the determinate bar format.
-     */
-    private function advanceTableBar(ProgressBar $bar, StatsTableTransferData $stats, bool $verbose): void
-    {
-        $isOneShot = $stats->status?->isOneShot();
-
-        $message = match ($isOneShot) {
-            true => $this->formatStatus($stats),
-            false => $this->formatProgress($stats, $verbose),
-            null => ''
-        };
-
-        $bar->setMessage($message, 'message');
-
-        if ($isOneShot) {
-            $bar->display();
-
-            return;
-        }
-
-        // Determinate while the (possibly estimated) total holds; back to a plain
-        // row counter once an estimate turns out too low.
-        $max = $stats->hasKnownTotal ? $stats->totalRows : 0;
-
-        if ($bar->getMaxSteps() !== $max) {
-            $bar->setMaxSteps($max);
-            $bar->setFormat($max > 0
-                ? '  %table%  [%bar%] %current%/%approx%%max% (%percent:3s%%)  %message%'
-                : '  %table%  [%bar%] %current%  %message%');
-        }
-
-        $bar->setMessage($stats->totalRowsEstimated ? '~' : '', 'approx');
-        $bar->setProgress($stats->rowsProcessed);
-    }
-
-    private function formatStatus(StatsTableTransferData $stats): string
-    {
-        return $stats->status instanceof TableRunPhase ? $stats->status->label().'…' : '';
-    }
-
-    /**
-     * Progress detail shown on the per-table bar: ETA plus the overall pace in every
-     * verbose mode, expanded to the full per-phase pace breakdown in very verbose mode.
-     */
-    private function formatProgress(StatsTableTransferData $stats, bool $verbose): string
-    {
-        $parts = $stats->estimatedSecondsRemaining !== null
-            ? ['ETA '.$this->formatDuration($stats->estimatedSecondsRemaining)]
-            : [];
-        $overall = trim($this->formatThroughput($stats->loopAggregate->latestPacePerMillion));
-
-        if (! $verbose) {
-            if ($overall !== '—') {
-                $parts[] = $overall;
-            }
-
-            return implode(' · ', $parts);
-        }
-
-        $parts[] = 'all '.$overall;
-        $parts[] = 'sel '.trim($this->formatThroughput($stats->selectAggregate->latestPacePerMillion));
-        $parts[] = 'tr '.trim($this->formatThroughput($stats->transformAggregate->latestPacePerMillion));
-        $parts[] = 'ins '.trim($this->formatThroughput($stats->insertAggregate->latestPacePerMillion));
-
-        return implode(' · ', $parts);
-    }
-
-    private function renderTimingSummary(OutputInterface $sink, StatsTableTransferData $timings): void
-    {
-        if ($timings->loopAggregate->count === 0) {
-            return;
-        }
-
-        $rows = [];
-
-        foreach (TableRunPhase::cases() as $phase) {
-            $agg = $timings->aggregate($phase);
-            if ($agg->count === 0) {
-                continue;
-            }
-
-            if ($phase === TableRunPhase::Loop || $phase === TableRunPhase::Select) {
-                $rows[] = new TableSeparator;
-            }
-
-            $rows[] = [
-                $phase->value,
-                (string) $agg->count,
-                $this->formatSeconds($agg->min ?? 0.0),
-                $this->formatSeconds($agg->max ?? 0.0),
-                $this->formatSeconds($agg->averageSeconds ?? 0.0),
-                $this->formatSeconds($agg->sum),
-                $this->formatThroughput($agg->pacePerMillion),
-            ];
-        }
-
-        $indent = str_repeat(' ', 6);
-        $sink->writeln(sprintf('%s── timing summary ──', $indent));
-        $buffer = new BufferedOutput(
-            $this->output->getVerbosity(),
-            $this->output->isDecorated(),
-            $this->output->getFormatter(),
-        );
-        $table = new Table($buffer);
-        $table->setHeaders(['phase', 'chunks', 'min', 'max', 'avg', 'total', 's/1M rows']);
-        $table->setRows($rows);
-        $table->render();
-
-        foreach (explode("\n", rtrim($buffer->fetch(), "\n")) as $line) {
-            $sink->writeln($indent.$line);
-        }
-    }
-
-    private function formatSeconds(float $seconds): string
-    {
-        if ($seconds < 1.0) {
-            return sprintf('%6.1f ms', $seconds * 1000.0);
-        }
-
-        return sprintf('%5.1f s', $seconds);
-    }
-
-    private function formatThroughput(?float $secondsPerMillion): string
-    {
-        if ($secondsPerMillion === null) {
-            return '—';
-        }
-
-        if ($secondsPerMillion >= 1.0) {
-            return sprintf('%5.1f s/M', $secondsPerMillion);
-        }
-
-        return sprintf('%5.1f ms/M', $secondsPerMillion * 1000.0);
     }
 
     /**
