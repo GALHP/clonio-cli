@@ -491,7 +491,7 @@ class RunCommand extends Command
             skipSchema: $skipSchema,
             skipTables: $skipTables,
             onlyTables: $onlyTables,
-            onProgress: function (string $tableName, TableRunStatus $status, int $rows, int $skipped, array $skippedRows) use ($isVerbose, $isDebug, $ci, &$notFoundTables, &$schemaFailureTables, &$dotColumn, $maxDotColumns, $progress, &$currentTimings): void {
+            onProgress: function (string $tableName, TableRunStatus $status, int $rows, int $skipped, array $skippedRows) use ($step, $isVerbose, $isDebug, $ci, &$notFoundTables, &$schemaFailureTables, &$dotColumn, $maxDotColumns, $progress, &$currentTimings): void {
                 $timings = $currentTimings;
                 $currentTimings = null;
 
@@ -530,23 +530,32 @@ class RunCommand extends Command
                     return;
                 }
 
-                // Verbose. Scrolling detail goes to the log section when bars are live
-                // (so it never corrupts them), otherwise straight to the console.
+                // Verbose. With live bars, scrolling detail goes to the log section (so it
+                // never corrupts them); otherwise the step renderer finalises the table
+                // line that onTableStart opened.
                 $sink = $progress instanceof CloningProgressDisplay ? $progress->log : $this->output;
 
-                // Only Transferred/Failed tables ever started a per-table bar
-                // (via onTableStart); NotFound/SchemaFailure never did.
-                if ($status === TableRunStatus::Transferred || $status === TableRunStatus::Failed) {
-                    $progress?->finishTable();
+                if ($progress instanceof CloningProgressDisplay) {
+                    // Only Transferred/Failed tables ever started a per-table bar
+                    // (via onTableStart); NotFound/SchemaFailure never did.
+                    if ($status === TableRunStatus::Transferred || $status === TableRunStatus::Failed) {
+                        $progress->finishTable();
+                    }
+
+                    $suffix = $skipped > 0 ? ', '.number_format($skipped).' skipped' : '';
+
+                    if ($status === TableRunStatus::Transferred) {
+                        $sink->writeln(sprintf('  <info>✓</info>  %s  (%s rows%s)', $tableName, number_format($rows), $suffix));
+                    } elseif ($status === TableRunStatus::Failed) {
+                        $sink->writeln(sprintf('  <error>✗</error>  %s  — transfer failed', $tableName));
+                    }
+                } elseif ($status === TableRunStatus::Transferred) {
+                    $step->success(sprintf('(%s rows%s)', number_format($rows), $skipped > 0 ? ', '.$skipped.' skipped' : ''));
+                } elseif ($status === TableRunStatus::Failed) {
+                    $step->fail();
                 }
 
-                $suffix = $skipped > 0 ? ', '.number_format($skipped).' skipped' : '';
-
-                if ($status === TableRunStatus::Transferred) {
-                    $sink->writeln(sprintf('  <info>✓</info>  %s  (%s rows%s)', $tableName, number_format($rows), $suffix));
-                } elseif ($status === TableRunStatus::Failed) {
-                    $sink->writeln(sprintf('  <error>✗</error>  %s  — transfer failed', $tableName));
-                } elseif ($status === TableRunStatus::NotFound) {
+                if ($status === TableRunStatus::NotFound) {
                     $sink->writeln(sprintf('  <comment>?</comment>  %s  — not found in source, skipped', $tableName));
                 } elseif ($status === TableRunStatus::SkippedBySchemaFailure) {
                     $sink->writeln(sprintf('  <error>S</error>  %s  — schema replication failed, skipped', $tableName));
@@ -565,7 +574,11 @@ class RunCommand extends Command
             },
             keyRemapping: $keyRemappingService,
             breakOnFailure: (bool) $this->option('break-on-failure'),
-            onTableStart: $progress instanceof CloningProgressDisplay ? $progress->startTable(...) : null,
+            onTableStart: match (true) {
+                $progress instanceof CloningProgressDisplay => $progress->startTable(...),
+                $isVerbose && ! $ci => fn (string $tableName) => $step->start('  '.$tableName),
+                default => null,
+            },
             dumpSink: $dumpSink,
             onStart: $progress instanceof CloningProgressDisplay ? $progress->start(...) : null,
             trackRowTotals: $progress instanceof CloningProgressDisplay,
@@ -744,21 +757,6 @@ class RunCommand extends Command
         foreach ($result->tables as $tableResult) {
             foreach ($tableResult->notes as $note) {
                 $this->line(sprintf('  <comment>Note: %s: %s</comment>', $tableResult->tableName, $note));
-            }
-        }
-
-        // Data-transfer failures with their reason. In live-bar mode the ✗ line is
-        // terse and the stderr log is silenced, so surface the reason here.
-        $failedTables = array_values(array_filter($result->tables, static fn (TableRunResultData $t): bool => $t->status === TableRunStatus::Failed));
-
-        if ($failedTables !== []) {
-            $this->line('');
-            foreach ($failedTables as $failedTable) {
-                $this->line(sprintf(
-                    '  <error>Error: table %s failed%s</error>',
-                    $failedTable->tableName,
-                    $failedTable->failureReason !== null ? ' — '.$failedTable->failureReason : '',
-                ));
             }
         }
 
@@ -1023,13 +1021,6 @@ class RunCommand extends Command
     {
         if ($seconds < 60) {
             return sprintf('%.0fs', $seconds);
-        }
-
-        if ($seconds >= 3600) {
-            $hours = (int) ($seconds / 3600);
-            $minutes = (int) (fmod($seconds, 3600) / 60);
-
-            return sprintf('%dh %dm', $hours, $minutes);
         }
 
         $minutes = (int) ($seconds / 60); // @pest-mutate-ignore: RemoveIntegerCast
