@@ -352,7 +352,7 @@ class RunCommand extends Command
 
         // ─── Phase 3: Dry-run ──────────────────────────────────────────────────
         if ((bool) $this->option('dry-run')) { // @pest-mutate-ignore: RemoveBooleanCast
-            return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $ci);
+            return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $tableResolver, $ci);
         }
 
         // ─── Phase 4-6: Full Run ───────────────────────────────────────────────
@@ -819,6 +819,7 @@ class RunCommand extends Command
         ConnectionData $source,
         ConnectionData $target,
         SchemaInspector $inspector,
+        TableConfigResolver $tableResolver,
         bool $ci,
     ): int {
         try {
@@ -828,6 +829,10 @@ class RunCommand extends Command
 
             return ExitCode::ConnectionError->value;
         }
+
+        // Expand regex table keys like the full run does, so the estimate covers
+        // the tables they match instead of counting the patterns as not found.
+        $config = $tableResolver->resolve($config, $schema);
 
         $schemaDiff = null;
 

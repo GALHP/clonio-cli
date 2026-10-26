@@ -1061,6 +1061,34 @@ it('estimates rows per strategy in a dry run', function (): void {
     );
 });
 
+it('expands regex table keys in a dry run', function (): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml(
+        "  '/^logs_\\d{4}$/':\n    rows:\n      strategy: last\n      limit: 2\n"
+        ."  '/^tmp_/':\n    rows:\n      strategy: full\n"
+    ));
+    g1_bind(inspect: fn (ConnectionData $c): DatabaseSchemaData => $c->name === 'production-db'
+        ? g1_schema([g1_table('logs_2025'), g1_table('logs_2026'), g1_table('users')])
+        : throw new RuntimeException('target down'));
+    g1_db([
+        'SELECT COUNT(*) as count FROM `logs_2025`' => [(object) ['count' => 5]],
+        'SELECT COUNT(*) as count FROM `logs_2026`' => [(object) ['count' => 1]],
+    ], 4);
+
+    [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--dry-run' => true]);
+
+    // Each matched table gets its own estimate; '/^tmp_/' matches nothing and is not "not found".
+    expect($code)->toBe(0)->and($out)->toBe(
+        "\n  Dry-run: production-db\n\n"
+        .g1_row('Table', 'Rows (est.)', 'Strategy', 'Transformations')
+        .g1_sep()
+        .g1_row('logs_2025', '2', 'last 2', '—')
+        .g1_row('logs_2026', '1', 'last 2', '—')
+        .g1_sep()
+        ."  Total                    3 rows across 2 tables\n"
+        ."\n  No data will be transferred. Run without --dry-run to execute.\n\n"
+    );
+});
+
 it('quotes the table name per source driver when counting rows', function (DatabaseConnectionType $type, string $quoted): void {
     Storage::disk('local')->put('t.yaml', g1_yaml("  users:\n    rows:\n      strategy: full\n"));
     g1_bind(connections: [
