@@ -234,10 +234,6 @@ class RunCommand extends Command
             );
         }
 
-        // Merge YAML-level skipTables with CLI --skip-tables (additive, deduplicated)
-        // Done here so both the dry-run and full-run paths see the merged list.
-        $skipTables = array_values(array_unique(array_merge($skipTables, $config->skipTables)));
-
         // ─── Phase 2: Connection Checks ────────────────────────────────────────
 
         // Resolve source connection from config
@@ -371,9 +367,9 @@ class RunCommand extends Command
         // $config->tables carry concrete table names, so the orchestrator, key
         // mapping and audit code all keep working against literal names.
         $config = $tableResolver->resolve($config, $sourceSchema);
-        // Regex keys may have expanded rows.strategy: skip / skip patterns into
-        // concrete names — re-merge them into the skip list.
-        $skipTables = array_values(array_unique(array_merge($skipTables, $config->skipTables)));
+        // Merge the YAML skip list (regex entries and rows.strategy: skip, now
+        // expanded to concrete names) with CLI --skip-tables, deduplicated.
+        $skipTables = array_values(array_unique(array_merge($skipTables, $config->skipTables))); // @pest-mutate-ignore: UnwrapArrayValues
 
         // ─── Phase 5b: Key Mapping Generation ─────────────────────────────────
         $keyRemappingService = null;

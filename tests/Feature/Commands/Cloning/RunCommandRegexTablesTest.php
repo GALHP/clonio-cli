@@ -67,6 +67,9 @@ tables:
   Users:
     rows:
       strategy: full
+  '/^tmp_/':
+    rows:
+      strategy: full
 skip:
   - '/^tmp_/'
 YAML);
