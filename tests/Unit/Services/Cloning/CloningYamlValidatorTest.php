@@ -1184,5 +1184,45 @@ it('validates the entries of the skip list', function (array $skip, array $error
 })->with([
     'literal and regex' => [['cache', '/^tmp_/'], []],
     'invalid regex' => [['cache', '/^tmp_(/'], ["skip[1]: invalid regex pattern '/^tmp_(/'"]],
+    'invalid regex with a flag' => [['/^tmp_(/i'], ["skip[0]: invalid regex pattern '/^tmp_(/i'"]],
     'not a string' => [[['nested']], ['skip[0]: must be a table name string']],
 ]);
+
+it('accepts a numeric table key', function (): void {
+    $config = makeValidConfig();
+    $config['tables'] = [2024 => ['rows' => ['strategy' => 'full']]];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([]);
+});
+
+it('reports every column error under a regex table key', function (): void {
+    $config = makeValidConfig();
+    $config['tables'] = [
+        '/^tenant_/i' => [
+            'rows' => ['strategy' => 'full'],
+            'columns' => [
+                'id' => ['strategy' => 'remapping', 'arguments' => [['use' => 'random_integer'], ['foreign_keys' => []]]],
+                'email' => ['strategy' => 'bogus'],
+            ],
+        ],
+    ];
+
+    $errors = (new CloningYamlValidator)->validate($config);
+
+    expect($errors)->toHaveCount(2)
+        ->and($errors[0])->toBe("Table '/^tenant_/i', column 'id': 'remapping' needs a literal table name, not a regex key")
+        ->and($errors[1])->toStartWith("Table '/^tenant_/i', column 'email': strategy must be one of");
+});
+
+it('reports every key_remapping entry after a regex table', function (): void {
+    $config = makeValidConfig();
+    $config['key_remapping'] = ['tables' => [
+        ['table' => '/^tenant_/', 'primary_key' => 'id', 'strategy' => 'random_integer'],
+        ['table' => 'ghosts', 'primary_key' => 'id', 'strategy' => 'random_integer'],
+    ]];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([
+        "key_remapping.tables[0]: table '/^tenant_/' must be a literal table name, not a regex",
+        "key_remapping.tables[1]: table 'ghosts' is not defined in the 'tables' section",
+    ]);
+});

@@ -230,3 +230,27 @@ it('leaves an all-literal config behaviourally unchanged', function (): void {
     expect($byName['audit_logs']->rows->strategy)->toBe('first');
     expect($byName['audit_logs']->rows->limit)->toBe(100);
 });
+
+it('keeps every skip entry once, literal or expanded from a regex', function (): void {
+    $config = configWith([tableEntry('users')], skip: ['/^tmp_/', 'cache', 'tmp_a']);
+
+    $schema = schemaWith(['tmp_a', 'tmp_b', 'users']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, $schema);
+
+    expect($resolved->skipTables)->toBe(['tmp_a', 'tmp_b', 'cache']);
+});
+
+it('lets a later regex override an exact literal match', function (): void {
+    $config = configWith([
+        tableEntry('users', 'first', 10),
+        tableEntry('/^users$/i', 'full'),
+    ]);
+
+    $schema = schemaWith(['Users', 'users']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, $schema);
+
+    expect(array_map(static fn (TableCloningConfigData $t): array => [$t->tableName, $t->rows->strategy], $resolved->tables))
+        ->toBe([['Users', 'full'], ['users', 'full']]);
+});

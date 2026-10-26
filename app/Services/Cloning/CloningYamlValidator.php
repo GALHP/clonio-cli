@@ -119,7 +119,7 @@ class CloningYamlValidator
 
     private function isInvalidRegex(string $name): bool
     {
-        return $this->isRegex($name) && @preg_match($name, '') === false;
+        return $this->isRegex($name) && @preg_match($name, '') === false; // @pest-mutate-ignore: EmptyStringToNotEmpty
     }
 
     /**

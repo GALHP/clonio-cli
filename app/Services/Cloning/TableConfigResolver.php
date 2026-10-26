@@ -80,13 +80,13 @@ final readonly class TableConfigResolver
             options: $config->options,
             tables: array_values($resolved),
             keyRemapping: $config->keyRemapping,
-            skipTables: $this->resolveSkipTables($config, $realNames, array_values($resolved)),
+            skipTables: $this->resolveSkipTables($config, $realNames, $resolved),
         );
     }
 
     /**
      * @param  list<string>  $realNames
-     * @param  list<TableCloningConfigData>  $resolvedTables
+     * @param  array<string, TableCloningConfigData>  $resolvedTables
      * @return list<string>
      */
     private function resolveSkipTables(CloningConfigData $config, array $realNames, array $resolvedTables): array
