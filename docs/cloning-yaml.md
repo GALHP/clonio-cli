@@ -112,41 +112,51 @@ tables:
 ### Matching table names with regex
 
 Wrap a key in `/…/` to treat it as a [PCRE regex](https://www.php.net/manual/en/reference.pcre.pattern.syntax.php)
-(trailing flags allowed, e.g. `/…/i`). At run time it is expanded against the
-actual tables in the source database, so one entry can configure a whole family
-of tables:
+(trailing flags allowed, e.g. `/…/i`). At run time, including `--dry-run`, it
+is expanded against the actual tables in the source database, so one entry can
+configure a whole family of tables:
 
 ```yaml
 tables:
   # Every monthly archive table gets the same rule
-  "/^application_logs_archive_\d{2}_\d{4}$/":
+  '/^application_logs_archive_\d{2}_\d{4}$/':
     rows:
       strategy: last
       limit: 1
       clear: delete
 ```
 
+- **Quote regex keys with single quotes.** In double quotes YAML treats `\d`,
+  `\w` and so on as escape sequences and rejects the file; there you would
+  have to write `\\d`.
 - **Keys without a leading `/` are always literal.** There is no glob/`*`
   wildcard — use a regex instead (`.*` covers what `*` would).
-- **Matching is case-insensitive** (both literal and regex keys).
+- **A regex matches as written**, so it is case-sensitive. Add the `i` flag to
+  ignore case: `'/^app_logs_/i'`.
+- **A literal key names the table with exactly that name.** Only when no source
+  table has it does the key match a table that differs in case only, and only
+  if there is exactly one such table (on PostgreSQL `Users` and `users` can
+  both exist; then a key `USERS` matches neither and is reported as *not
+  found*).
 - **The last matching entry in the file wins.** List a broad regex first, then
   override individual tables with a more specific regex or literal below it:
 
   ```yaml
   tables:
-    "/^app_logs_.*/":            # default: keep only the newest row
+    '/^app_logs_/':              # default: keep only the newest row
       rows: {strategy: last, limit: 1}
     app_logs_critical:           # …but copy this one in full
       rows: {strategy: full}
   ```
 
 - A literal key that names a table **not** present in the source is still
-  reported as *not found* during the run. A regex that matches no table is
-  simply skipped.
+  reported as *not found*. A regex that matches no table is simply skipped.
+- Entries of the top-level `skip:` list can be regex too.
 
-> **Note.** Key remapping (inline `strategy: remapping` columns and the legacy
-> `key_remapping:` section) and the `--skip-tables` / `--only-tables` flags
-> operate on **literal** table names only; regex keys are not expanded for them.
+> **Note.** Key remapping needs literal table names: a `strategy: remapping`
+> column under a regex key, or a regex `table` in the `key_remapping:` section,
+> is rejected when the file is validated. The `--skip-tables` / `--only-tables`
+> flags also take literal names only.
 
 ### `rows`
 

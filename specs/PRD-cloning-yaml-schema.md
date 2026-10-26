@@ -80,21 +80,29 @@ alias of `--no-remap-keys`) and set at dump time via `cloning:dump --no-remap-ke
 
 A `tables` key is either a **literal** table name or a **regex** (a key wrapped
 in `/…/`, trailing flags allowed). Regex keys are expanded against the actual
-source tables at run time, so a single entry can configure a whole family of
-tables:
+source tables at run time (also for `--dry-run`), so a single entry can
+configure a whole family of tables:
 
 - Keys without a leading `/` are always literal — there is no glob/`*` wildcard.
-- Matching is case-insensitive for both literal and regex keys.
+- Regex keys match as written (case-sensitive unless the `i` flag is set).
+- A literal key names the table with exactly that name; only when no source
+  table has it does it fall back to the single table that matches it
+  case-insensitively. An ambiguous fallback matches nothing (*not found*).
 - When several entries match the same table, the **last** entry in file order
   wins (list a broad regex first, then override specific tables below it).
 - A literal key naming an absent source table is still reported *not found*; a
   regex that matches nothing is skipped.
-- Regex keys are **not** expanded for key remapping or the
-  `--skip-tables` / `--only-tables` flags — those remain literal-only.
+- Regex keys must be single-quoted in YAML; double quotes turn `\d` into an
+  invalid escape sequence.
+- Entries of the top-level `skip:` list may be regex as well; each regex must
+  compile.
+- Key remapping needs literal table names: a `strategy: remapping` column under
+  a regex key and a regex `key_remapping.tables[].table` fail validation. The
+  `--skip-tables` / `--only-tables` flags remain literal-only.
 
 ```yaml
 tables:
-  "/^application_logs_archive_\d{2}_\d{4}$/":   # regex: all monthly archives
+  '/^application_logs_archive_\d{2}_\d{4}$/':   # regex: all monthly archives
     rows:
       strategy: last
       limit: 1
