@@ -94,13 +94,32 @@ class CloningYamlValidator
             }
         }
 
-        // 7. skip list validation (optional)
+        // 7. skip list validation (optional); entries may be regex like table keys
         $skip = $data['skip'] ?? null;
         if ($skip !== null && ! is_array($skip)) {
             $errors[] = "Field 'skip' must be a list of table name strings";
+        } elseif (is_array($skip)) {
+            foreach ($skip as $index => $entry) {
+                if (! is_string($entry)) {
+                    $errors[] = sprintf('skip[%s]: must be a table name string', $index);
+                } elseif ($this->isInvalidRegex($entry)) {
+                    $errors[] = sprintf("skip[%s]: invalid regex pattern '%s'", $index, $entry);
+                }
+            }
         }
 
         return $errors;
+    }
+
+    /** A table key or skip entry wrapped in `/…/` is a regex, any other is a literal name. */
+    private function isRegex(string $name): bool
+    {
+        return str_starts_with($name, '/');
+    }
+
+    private function isInvalidRegex(string $name): bool
+    {
+        return $this->isRegex($name) && @preg_match($name, '') === false;
     }
 
     /**
@@ -157,7 +176,7 @@ class CloningYamlValidator
             // A table key may be a slash-delimited regex; reject it early if it
             // does not compile so the user hears about it before any DB work.
             $key = (string) $tableName;
-            if (str_starts_with($key, '/') && @preg_match($key, '') === false) {
+            if ($this->isInvalidRegex($key)) {
                 $errors[] = sprintf('%s: invalid regex pattern', $prefix);
             }
 
@@ -190,7 +209,7 @@ class CloningYamlValidator
                 } else {
                     /** @var array<string, mixed> $typedColumns */
                     $typedColumns = $columns;
-                    $errors = array_merge($errors, $this->validateColumns($prefix, $typedColumns));
+                    $errors = array_merge($errors, $this->validateColumns($prefix, $typedColumns, $this->isRegex($key)));
                 }
             }
         }
@@ -239,9 +258,10 @@ class CloningYamlValidator
 
     /**
      * @param  array<string, mixed>  $columns
+     * @param  bool  $regexTable  The columns belong to a regex table key
      * @return list<string>
      */
-    private function validateColumns(string $tablePrefix, array $columns): array
+    private function validateColumns(string $tablePrefix, array $columns, bool $regexTable): array
     {
         $errors = [];
 
@@ -268,6 +288,14 @@ class CloningYamlValidator
 
             if (! is_string($strategy) || ! in_array($strategy, self::VALID_COLUMN_STRATEGIES, true)) {
                 $errors[] = sprintf('%s: strategy must be one of: %s', $prefix, implode(', ', self::VALID_COLUMN_STRATEGIES));
+
+                continue;
+            }
+
+            // Key mappings are generated per concrete table name; under a regex key
+            // they would be silently skipped and the original keys copied.
+            if ($regexTable && $strategy === 'remapping') {
+                $errors[] = sprintf("%s: 'remapping' needs a literal table name, not a regex key", $prefix);
 
                 continue;
             }
@@ -325,6 +353,12 @@ class CloningYamlValidator
             }
 
             $seenTables[] = $table;
+
+            if ($this->isRegex($table)) {
+                $errors[] = sprintf("%s: table '%s' must be a literal table name, not a regex", $prefix, $table);
+
+                continue;
+            }
 
             if (! in_array($table, $knownTableNames, true)) {
                 $errors[] = sprintf("%s: table '%s' is not defined in the 'tables' section", $prefix, $table);

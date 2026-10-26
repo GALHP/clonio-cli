@@ -1153,3 +1153,36 @@ it('flags an invalid regex table key', function (): void {
 
     expect($errors)->toContain("Table '/^app_logs_(unterminated/': invalid regex pattern");
 });
+
+it('rejects a remapping column under a regex table key', function (): void {
+    $config = makeValidConfig();
+    $config['tables'] = [
+        '/^tenant_\d+$/' => [
+            'rows' => ['strategy' => 'full'],
+            'columns' => ['id' => ['strategy' => 'remapping', 'arguments' => [['use' => 'random_integer'], ['foreign_keys' => []]]]],
+        ],
+    ];
+
+    expect((new CloningYamlValidator)->validate($config))
+        ->toBe(["Table '/^tenant_\\d+\$/', column 'id': 'remapping' needs a literal table name, not a regex key"]);
+});
+
+it('rejects a regex table name in key_remapping', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['/^tenant_/'] = ['rows' => ['strategy' => 'full']];
+    $config['key_remapping'] = ['tables' => [['table' => '/^tenant_/', 'primary_key' => 'id', 'strategy' => 'random_integer']]];
+
+    expect((new CloningYamlValidator)->validate($config))
+        ->toBe(["key_remapping.tables[0]: table '/^tenant_/' must be a literal table name, not a regex"]);
+});
+
+it('validates the entries of the skip list', function (array $skip, array $errors): void {
+    $config = makeValidConfig();
+    $config['skip'] = $skip;
+
+    expect((new CloningYamlValidator)->validate($config))->toBe($errors);
+})->with([
+    'literal and regex' => [['cache', '/^tmp_/'], []],
+    'invalid regex' => [['cache', '/^tmp_(/'], ["skip[1]: invalid regex pattern '/^tmp_(/'"]],
+    'not a string' => [[['nested']], ['skip[0]: must be a table name string']],
+]);
