@@ -659,7 +659,7 @@ it('selects quoted columns and drops excluded values from the inserted rows', fu
         g3_orch_make(),
         g3_orch_config([g3_orch_table('users', 'full', [g3_orch_exclude('secret'), g3_orch_exclude('name')])]),
         new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
-            new ColumnSchemaData('id', 'int', false, null, true),
+            new ColumnSchemaData('id', $type === DatabaseConnectionType::PostgreSQL ? 'integer' : 'int', false, null, true),
             new ColumnSchemaData('nick', 'varchar', true, null, false),
             new ColumnSchemaData('name', 'varchar', true, null, false),
         ])]),
@@ -1053,8 +1053,8 @@ it('seeks with a row-value comparison on PostgreSQL and SQLite, over a composite
         g3_orch_make(),
         g3_orch_config([g3_orch_table('users')], chunkSize: 2),
         new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
-            new ColumnSchemaData('tenant_id', 'int', false, null, true),
-            new ColumnSchemaData('id', 'int', false, null, true),
+            new ColumnSchemaData('tenant_id', $type === DatabaseConnectionType::PostgreSQL ? 'integer' : 'int', false, null, true, primaryKeyPosition: 1),
+            new ColumnSchemaData('id', $type === DatabaseConnectionType::PostgreSQL ? 'integer' : 'int', false, null, true, primaryKeyPosition: 2),
         ])]),
         source: g3_orch_conn('source', $type),
     );
@@ -1172,8 +1172,8 @@ it('expands the seek over a composite primary key on MySQL', function (): void {
         g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('first', 10, 'tenant_id'), [])], chunkSize: 2),
         new DatabaseSchemaData('src', [g3_orch_schema_table('users', [
             new ColumnSchemaData('name', 'varchar', true, null, false),
-            new ColumnSchemaData('tenant_id', 'int', false, null, true),
-            new ColumnSchemaData('id', 'int', false, null, true),
+            new ColumnSchemaData('tenant_id', 'int', false, null, true, primaryKeyPosition: 1),
+            new ColumnSchemaData('id', 'int', false, null, true, primaryKeyPosition: 2),
         ])]),
     );
 
@@ -1238,3 +1238,113 @@ it('dumps a table without a primary key with advancing offsets', function (): vo
         'SELECT * FROM `users` LIMIT 1 OFFSET 2',
     ]);
 });
+
+it('seeks along the primary key in key order, not table order', function (): void {
+    $log = g3_orch_db([[(object) ['user_id' => 7, 'role_id' => 1], (object) ['user_id' => 3, 'role_id' => 2]], []]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('role_user')], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('role_user', [
+            new ColumnSchemaData('user_id', 'bigint', false, null, true, primaryKeyPosition: 2),
+            new ColumnSchemaData('role_id', 'bigint', false, null, true, primaryKeyPosition: 1),
+        ])]),
+    );
+
+    expect($log->selects)->toBe([
+        'SELECT * FROM `role_user` ORDER BY `role_id` ASC, `user_id` ASC LIMIT 2',
+        'SELECT * FROM `role_user` WHERE (`role_id` > ?) OR (`role_id` = ? AND `user_id` > ?) ORDER BY `role_id` ASC, `user_id` ASC LIMIT 2',
+    ])->and($log->bindings[1])->toBe([2, 2, 3]);
+});
+
+it('reads a composite primary key of unknown key order with LIMIT/OFFSET', function (): void {
+    $log = g3_orch_db([[(object) ['user_id' => 7, 'role_id' => 1]]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('role_user')], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('role_user', [
+            new ColumnSchemaData('user_id', 'bigint', false, null, true),
+            new ColumnSchemaData('role_id', 'bigint', false, null, true),
+        ])]),
+    );
+
+    expect($log->selects)->toBe(['SELECT * FROM `role_user` LIMIT 2 OFFSET 0']);
+});
+
+it('seeks only on key types whose values bind back unchanged', function (DatabaseConnectionType $type, string $columnType, bool $seeks): void {
+    $log = g3_orch_db([[(object) ['id' => 1]]]);
+
+    g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('users')], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users', [new ColumnSchemaData('id', $columnType, false, null, true)])]),
+        source: g3_orch_conn('source', $type),
+    );
+
+    expect(str_contains($log->selects[0], 'OFFSET'))->toBe(! $seeks);
+})->with([
+    'mysql bigint' => [DatabaseConnectionType::Mysql, 'bigint', true],
+    'mysql tinyint' => [DatabaseConnectionType::Mysql, 'tinyint', true],
+    'mysql smallint' => [DatabaseConnectionType::Mysql, 'smallint', true],
+    'mysql mediumint' => [DatabaseConnectionType::Mysql, 'mediumint', true],
+    'mysql int' => [DatabaseConnectionType::Mysql, 'int', true],
+    'mysql integer' => [DatabaseConnectionType::Mysql, 'integer', true],
+    'mysql numeric' => [DatabaseConnectionType::Mysql, 'numeric', true],
+    'mysql char' => [DatabaseConnectionType::Mysql, 'char', true],
+    'mysql tinytext' => [DatabaseConnectionType::Mysql, 'tinytext', true],
+    'mysql text' => [DatabaseConnectionType::Mysql, 'text', true],
+    'mysql mediumtext' => [DatabaseConnectionType::Mysql, 'mediumtext', true],
+    'mysql longtext' => [DatabaseConnectionType::Mysql, 'longtext', true],
+    'mysql date' => [DatabaseConnectionType::Mysql, 'date', true],
+    'pgsql smallint' => [DatabaseConnectionType::PostgreSQL, 'smallint', true],
+    'pgsql bigint' => [DatabaseConnectionType::PostgreSQL, 'bigint', true],
+    'pgsql numeric' => [DatabaseConnectionType::PostgreSQL, 'numeric', true],
+    'pgsql character varying' => [DatabaseConnectionType::PostgreSQL, 'character varying', true],
+    'pgsql character' => [DatabaseConnectionType::PostgreSQL, 'character', true],
+    'pgsql date' => [DatabaseConnectionType::PostgreSQL, 'date', true],
+    'pgsql timestamp without time zone' => [DatabaseConnectionType::PostgreSQL, 'timestamp without time zone', true],
+    'mysql varchar' => [DatabaseConnectionType::Mysql, 'varchar', true],
+    'mysql decimal' => [DatabaseConnectionType::Mysql, 'decimal', true],
+    'mysql datetime' => [DatabaseConnectionType::MariaDB, 'datetime', true],
+    'mysql timestamp' => [DatabaseConnectionType::Mysql, 'timestamp', false],
+    'mysql double' => [DatabaseConnectionType::Mysql, 'double', false],
+    'mysql float' => [DatabaseConnectionType::MariaDB, 'float', false],
+    'mysql enum' => [DatabaseConnectionType::Mysql, 'enum', false],
+    'mysql set' => [DatabaseConnectionType::Mysql, 'set', false],
+    'mysql varbinary' => [DatabaseConnectionType::Mysql, 'varbinary', false],
+    'mysql blob' => [DatabaseConnectionType::Mysql, 'blob', false],
+    'pgsql integer' => [DatabaseConnectionType::PostgreSQL, 'integer', true],
+    'pgsql uuid' => [DatabaseConnectionType::PostgreSQL, 'uuid', true],
+    'pgsql text' => [DatabaseConnectionType::PostgreSQL, 'text', true],
+    'pgsql timestamptz' => [DatabaseConnectionType::PostgreSQL, 'timestamp with time zone', true],
+    'pgsql double precision' => [DatabaseConnectionType::PostgreSQL, 'double precision', false],
+    'pgsql real' => [DatabaseConnectionType::PostgreSQL, 'real', false],
+    'pgsql bytea' => [DatabaseConnectionType::PostgreSQL, 'bytea', false],
+    'sqlite integer' => [DatabaseConnectionType::Sqlite, 'integer', true],
+    'sqlite varchar' => [DatabaseConnectionType::Sqlite, 'varchar(36)', true],
+    'sqlite clob' => [DatabaseConnectionType::Sqlite, 'clob', true],
+    'sqlite text' => [DatabaseConnectionType::Sqlite, 'TEXT', true],
+    'sqlite real' => [DatabaseConnectionType::Sqlite, 'real', false],
+    'sqlite blob' => [DatabaseConnectionType::Sqlite, 'blob', false],
+    'sqlite numeric' => [DatabaseConnectionType::Sqlite, 'numeric', false],
+]);
+
+it('fails the table instead of looping when the cursor does not move', function (?SqlDumpService $dumpSink): void {
+    // The second chunk ends on the same key as the first: the seek re-read it.
+    $log = g3_orch_db([[(object) ['id' => 1], (object) ['id' => 2]], [(object) ['id' => 1], (object) ['id' => 2]], [(object) ['id' => 3]]]);
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('users')], chunkSize: 2),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('users')]),
+        dumpSink: $dumpSink,
+    );
+
+    expect($log->selects)->toHaveCount(2)
+        ->and($result->tables[0]->status)->toBe(TableRunStatus::Failed)
+        ->and($result->tables[0]->failureReason)->toBe('Cannot page table users: the key values of the last row did not move past the previous chunk');
+})->with([
+    'transfer' => [null],
+    'dump' => fn (): SqlDumpService => tap(g3_orch_dump_sink(), static fn ($sink) => $sink->shouldReceive('writeRows')),
+]);
