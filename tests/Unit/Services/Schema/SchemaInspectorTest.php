@@ -70,7 +70,7 @@ it('maps MySQL rows with exact metadata and per-table bindings', function (): vo
     $inspector = g6x_fakeSelects([
         [(object) ['TABLE_NAME' => 'users']],
         [
-            (object) ['COLUMN_NAME' => 'id', 'DATA_TYPE' => 'int', 'COLUMN_TYPE' => 'INT UNSIGNED', 'IS_NULLABLE' => 'NO', 'COLUMN_DEFAULT' => null, 'COLUMN_KEY' => 'PRI', 'EXTRA' => 'auto_increment'],
+            (object) ['COLUMN_NAME' => 'id', 'DATA_TYPE' => 'int', 'COLUMN_TYPE' => 'INT UNSIGNED', 'IS_NULLABLE' => 'NO', 'COLUMN_DEFAULT' => null, 'COLUMN_KEY' => 'PRI', 'EXTRA' => 'auto_increment', 'PK_POSITION' => '1'],
             (object) ['COLUMN_NAME' => 'name', 'DATA_TYPE' => 'varchar', 'COLUMN_TYPE' => 'varchar(120)', 'IS_NULLABLE' => 'YES', 'COLUMN_DEFAULT' => 'anon', 'COLUMN_KEY' => ''],
             (object) ['COLUMN_NAME' => 'age', 'DATA_TYPE' => 'int', 'COLUMN_TYPE' => 'int', 'IS_NULLABLE' => 'NO', 'COLUMN_DEFAULT' => 18, 'COLUMN_KEY' => 'MUL'],
             (object) ['COLUMN_NAME' => 'price', 'DATA_TYPE' => 'decimal', 'COLUMN_TYPE' => 'decimal(10,2)', 'IS_NULLABLE' => 'YES', 'COLUMN_DEFAULT' => null, 'COLUMN_KEY' => ''],
@@ -83,7 +83,7 @@ it('maps MySQL rows with exact metadata and per-table bindings', function (): vo
 
     expect($bindings)->toBe([[], ['users'], ['users']])
         ->and($schema->databaseName)->toBe('shop')
-        ->and(g6x_col($users, 'id'))->toEqual(new ColumnSchemaData('id', 'int', false, null, true, unsigned: true))
+        ->and(g6x_col($users, 'id'))->toEqual(new ColumnSchemaData('id', 'int', false, null, true, unsigned: true, primaryKeyPosition: 1))
         ->and(g6x_col($users, 'name'))->toEqual(new ColumnSchemaData('name', 'varchar', true, 'anon', false, length: 120))
         ->and(g6x_col($users, 'age'))->toEqual(new ColumnSchemaData('age', 'int', false, '18', false))
         ->and(g6x_col($users, 'price'))->toEqual(new ColumnSchemaData('price', 'decimal', true, null, false, precision: 10, scale: 2))
@@ -106,7 +106,7 @@ it('maps PostgreSQL rows with exact metadata and per-table bindings', function (
     $inspector = g6x_fakeSelects([
         [(object) ['tablename' => 'items']],
         [
-            (object) ['column_name' => 'id', 'data_type' => 'integer', 'is_nullable' => 'NO', 'column_default' => "nextval('s')", 'character_maximum_length' => null, 'numeric_precision' => '32', 'numeric_scale' => '0', 'is_primary' => 1],
+            (object) ['column_name' => 'id', 'data_type' => 'integer', 'is_nullable' => 'NO', 'column_default' => "nextval('s')", 'character_maximum_length' => null, 'numeric_precision' => '32', 'numeric_scale' => '0', 'is_primary' => 1, 'pk_position' => 1],
             (object) ['column_name' => 'sku', 'data_type' => 'character varying', 'is_nullable' => 'YES', 'column_default' => null, 'character_maximum_length' => '64', 'numeric_precision' => null, 'numeric_scale' => null, 'is_primary' => 0],
             (object) ['column_name' => 'qty', 'data_type' => 'numeric', 'is_nullable' => 'NO', 'column_default' => 5, 'character_maximum_length' => null, 'numeric_precision' => 12, 'numeric_scale' => 4, 'is_primary' => 0],
         ],
@@ -118,7 +118,7 @@ it('maps PostgreSQL rows with exact metadata and per-table bindings', function (
 
     expect($bindings)->toBe([[], ['items'], ['items']])
         ->and($schema->databaseName)->toBe('cat')
-        ->and(g6x_col($items, 'id'))->toEqual(new ColumnSchemaData('id', 'integer', false, "nextval('s')", true, precision: 32, scale: 0))
+        ->and(g6x_col($items, 'id'))->toEqual(new ColumnSchemaData('id', 'integer', false, "nextval('s')", true, precision: 32, scale: 0, primaryKeyPosition: 1))
         ->and(g6x_col($items, 'sku'))->toEqual(new ColumnSchemaData('sku', 'character varying', true, null, false, length: 64))
         ->and(g6x_col($items, 'qty'))->toEqual(new ColumnSchemaData('qty', 'numeric', false, '5', false, precision: 12, scale: 4))
         ->and($items?->foreignKeys[0]->columnName)->toBe('cat_id')
@@ -139,7 +139,7 @@ it('maps SQL Server rows with exact metadata and per-table bindings', function (
     $inspector = g6x_fakeSelects([
         [(object) ['TABLE_NAME' => 'docs']],
         [
-            (object) ['COLUMN_NAME' => 'id', 'DATA_TYPE' => 'int', 'IS_NULLABLE' => 'NO', 'COLUMN_DEFAULT' => null, 'CHARACTER_MAXIMUM_LENGTH' => null, 'NUMERIC_PRECISION' => '10', 'NUMERIC_SCALE' => '0', 'is_primary' => 1],
+            (object) ['COLUMN_NAME' => 'id', 'DATA_TYPE' => 'int', 'IS_NULLABLE' => 'NO', 'COLUMN_DEFAULT' => null, 'CHARACTER_MAXIMUM_LENGTH' => null, 'NUMERIC_PRECISION' => '10', 'NUMERIC_SCALE' => '0', 'is_primary' => 1, 'pk_position' => '1'],
             (object) ['COLUMN_NAME' => 'title', 'DATA_TYPE' => 'nvarchar', 'IS_NULLABLE' => 'YES', 'COLUMN_DEFAULT' => "('x')", 'CHARACTER_MAXIMUM_LENGTH' => 0, 'NUMERIC_PRECISION' => null, 'NUMERIC_SCALE' => null, 'is_primary' => 0],
             (object) ['COLUMN_NAME' => 'amount', 'DATA_TYPE' => 'decimal', 'IS_NULLABLE' => 'NO', 'COLUMN_DEFAULT' => 3, 'CHARACTER_MAXIMUM_LENGTH' => null, 'NUMERIC_PRECISION' => 18, 'NUMERIC_SCALE' => 6, 'is_primary' => 0],
         ],
@@ -151,7 +151,7 @@ it('maps SQL Server rows with exact metadata and per-table bindings', function (
 
     expect($bindings)->toBe([[], ['docs', 'docs'], ['docs']])
         ->and($schema->databaseName)->toBe('cms')
-        ->and(g6x_col($docs, 'id'))->toEqual(new ColumnSchemaData('id', 'int', false, null, true, precision: 10, scale: 0))
+        ->and(g6x_col($docs, 'id'))->toEqual(new ColumnSchemaData('id', 'int', false, null, true, precision: 10, scale: 0, primaryKeyPosition: 1))
         ->and(g6x_col($docs, 'title'))->toEqual(new ColumnSchemaData('title', 'nvarchar', true, "('x')", false, length: 0))
         ->and(g6x_col($docs, 'title')->length)->toBe(0) // 0 is a real length; only negative (MAX) maps to null
         ->and(g6x_col($docs, 'amount'))->toEqual(new ColumnSchemaData('amount', 'decimal', false, '3', false, precision: 18, scale: 6))
@@ -205,6 +205,8 @@ it('maps SQLite PRAGMA values, skipping hidden virtual-table columns without sto
         (object) ['name' => 'id', 'type' => 'INTEGER', 'notnull' => 1, 'dflt_value' => null, 'pk' => 1, 'hidden' => '0'],
         (object) ['name' => 'skipme', 'type' => 'TEXT', 'notnull' => 0, 'dflt_value' => null, 'pk' => 0, 'hidden' => '1'],
         (object) ['name' => 'qty', 'type' => 'INT', 'notnull' => 0, 'dflt_value' => 7, 'pk' => 0],
+        (object) ['name' => 'tenant', 'type' => 'INT', 'notnull' => 1, 'dflt_value' => null, 'pk' => '2'],
+        (object) ['name' => 'odd', 'type' => 'INT', 'notnull' => 0, 'dflt_value' => null, 'pk' => null],
         (object) ['name' => 'virt', 'type' => 'TEXT', 'notnull' => 0, 'dflt_value' => null, 'pk' => 0, 'hidden' => '2'],
         (object) ['name' => 'stored', 'type' => 'TEXT', 'notnull' => 0, 'dflt_value' => null, 'pk' => 0, 'hidden' => '3'],
     ], [(object) ['from' => 'qty', 'table' => 'other', 'to' => 'id']]);
@@ -213,8 +215,10 @@ it('maps SQLite PRAGMA values, skipping hidden virtual-table columns without sto
     $t = $schema->getTable('t');
 
     expect($schema->databaseName)->toBe('/data/app.sqlite')
-        ->and(array_map(fn (ColumnSchemaData $c): string => $c->name, $t?->columns ?? []))->toBe(['id', 'qty', 'virt', 'stored'])
-        ->and(g6x_col($t, 'id'))->toEqual(new ColumnSchemaData('id', 'integer', false, null, true))
+        ->and(array_map(fn (ColumnSchemaData $c): string => $c->name, $t?->columns ?? []))->toBe(['id', 'qty', 'tenant', 'odd', 'virt', 'stored'])
+        ->and(g6x_col($t, 'id'))->toEqual(new ColumnSchemaData('id', 'integer', false, null, true, primaryKeyPosition: 1))
+        ->and(g6x_col($t, 'tenant'))->toEqual(new ColumnSchemaData('tenant', 'int', false, null, true, primaryKeyPosition: 2))
+        ->and(g6x_col($t, 'odd'))->toEqual(new ColumnSchemaData('odd', 'int', true, null, false))
         ->and(g6x_col($t, 'qty'))->toEqual(new ColumnSchemaData('qty', 'int', true, '7', false))
         ->and(g6x_col($t, 'virt')->generated)->toBeTrue()
         ->and(g6x_col($t, 'stored')->generated)->toBeTrue()
