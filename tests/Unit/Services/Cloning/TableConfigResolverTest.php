@@ -165,7 +165,7 @@ it('expands a regex entry in the top-level skip list', function (): void {
     expect($resolved->skipTables)->toContain('tmp_b');
 });
 
-it('matches literal keys case-insensitively', function (): void {
+it('falls back to a case-insensitive match when no table has the literal key exactly', function (): void {
     $config = configWith([tableEntry('Users')]);
 
     $schema = schemaWith(['users']);
@@ -175,6 +175,40 @@ it('matches literal keys case-insensitively', function (): void {
     expect($resolved->tables)->toHaveCount(1);
     expect($resolved->tables[0]->tableName)->toBe('users');
 });
+
+it('matches a literal key exactly before any case-insensitive match', function (): void {
+    // PostgreSQL can hold both; the key names only the exact one.
+    $config = configWith([tableEntry('users', 'first', 10)]);
+
+    $schema = schemaWith(['Users', 'users']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, $schema);
+
+    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['users']);
+});
+
+it('keeps an ambiguous case-insensitive literal key as not found', function (): void {
+    $config = configWith([tableEntry('USERS')]);
+
+    $schema = schemaWith(['Users', 'users']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, $schema);
+
+    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['USERS']);
+});
+
+it('matches regex keys as written, case-sensitively unless they carry the i flag', function (string $key, array $expected): void {
+    $config = configWith([tableEntry($key)]);
+
+    $schema = schemaWith(['USERS', 'users']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, $schema);
+
+    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe($expected);
+})->with([
+    'case-sensitive' => ['/^users$/', ['users']],
+    'i flag' => ['/^users$/i', ['USERS', 'users']],
+]);
 
 it('leaves an all-literal config behaviourally unchanged', function (): void {
     $config = configWith([

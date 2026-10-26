@@ -14,10 +14,13 @@ use App\Data\Schema\TableSchemaData;
  *
  * A key under `tables:` is either a literal table name or a slash-delimited
  * regex (`/…/`). Regex keys are expanded to the concrete source tables they
- * match; when several entries match the same table, the last one in YAML order
- * wins. The result is a config whose `tables` all carry concrete table names,
- * so the rest of the run (orchestrator, getTable(), dependency sort, audit)
- * keeps working against literal names.
+ * match, case-sensitively unless the pattern carries the `i` flag. A literal
+ * key names the table with exactly that name; only when no source table has
+ * it does the key fall back to the one table that matches it case-insensitively
+ * (none if several do). When several entries match the same table, the last
+ * one in YAML order wins. The result is a config whose `tables` all carry
+ * concrete table names, so the rest of the run (orchestrator, getTable(),
+ * dependency sort, audit) keeps working against literal names.
  */
 final readonly class TableConfigResolver
 {
@@ -28,6 +31,14 @@ final readonly class TableConfigResolver
             $schema->tables,
         );
 
+        /** @var array<string, ?string> $literalTargets literal key => the source table it names, or null */
+        $literalTargets = [];
+        foreach ($config->tables as $entry) {
+            if (! $this->isRegex($entry->tableName)) {
+                $literalTargets[$entry->tableName] = $this->literalTarget($entry->tableName, $realNames);
+            }
+        }
+
         /** @var array<string, TableCloningConfigData> $resolved */
         $resolved = [];
 
@@ -36,7 +47,11 @@ final readonly class TableConfigResolver
             $winner = null;
 
             foreach ($config->tables as $entry) {
-                if ($this->matches($entry->tableName, $realName)) {
+                $matches = $this->isRegex($entry->tableName)
+                    ? preg_match($entry->tableName, $realName) === 1
+                    : $literalTargets[$entry->tableName] === $realName;
+
+                if ($matches) {
                     $winner = $entry;
                 }
             }
@@ -50,28 +65,13 @@ final readonly class TableConfigResolver
             }
         }
 
-        // 2. Preserve literal entries that match no source table, so a mistyped
+        // 2. Preserve literal entries that name no source table, so a mistyped
         //    or dropped table still reports NotFound as before. (Regex keys that
         //    match nothing were never a concrete table — drop them.)
         foreach ($config->tables as $entry) {
-            if ($this->isRegex($entry->tableName)) {
-                continue;
+            if (! $this->isRegex($entry->tableName) && $literalTargets[$entry->tableName] === null) {
+                $resolved[$entry->tableName] = $entry;
             }
-
-            $matchedReal = array_any(
-                $realNames,
-                fn (string $realName): bool => $this->matches($entry->tableName, $realName),
-            );
-
-            if ($matchedReal) {
-                continue;
-            }
-
-            if (isset($resolved[$entry->tableName])) {
-                continue;
-            }
-
-            $resolved[$entry->tableName] = $entry;
         }
 
         return new CloningConfigData(
@@ -98,7 +98,7 @@ final readonly class TableConfigResolver
         foreach ($config->skipTables as $entry) {
             if ($this->isRegex($entry)) {
                 foreach ($realNames as $realName) {
-                    if ($this->matches($entry, $realName) && ! in_array($realName, $skip, true)) {
+                    if (preg_match($entry, $realName) === 1 && ! in_array($realName, $skip, true)) {
                         $skip[] = $realName;
                     }
                 }
@@ -122,16 +122,21 @@ final readonly class TableConfigResolver
     }
 
     /**
-     * Match a config key against a concrete table name: slash-delimited regex,
-     * otherwise a case-insensitive literal comparison.
+     * The source table a literal key names: the table with exactly that name,
+     * else the single table matching it case-insensitively, else none (also
+     * when the case-insensitive match is ambiguous, e.g. `Users` and `users`).
+     *
+     * @param  list<string>  $realNames
      */
-    private function matches(string $key, string $tableName): bool
+    private function literalTarget(string $key, array $realNames): ?string
     {
-        if ($this->isRegex($key)) {
-            return preg_match($key, $tableName) === 1;
+        if (in_array($key, $realNames, true)) {
+            return $key;
         }
 
-        return strcasecmp($key, $tableName) === 0;
+        $candidates = array_values(array_filter($realNames, static fn (string $name): bool => strcasecmp($key, $name) === 0));
+
+        return count($candidates) === 1 ? $candidates[0] : null;
     }
 
     private function isRegex(string $key): bool
