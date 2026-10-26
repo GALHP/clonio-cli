@@ -1,0 +1,82 @@
+<?php
+
+declare(strict_types=1);
+
+use App\Enums\ExitCode;
+use Illuminate\Support\Facades\Storage;
+
+// cloning:run with regex table keys against real SQLite databases.
+
+beforeEach(function (): void {
+    Storage::fake('local');
+});
+
+/** Seed the source: two log years, a critical log, users and a cache table. */
+function regexTablesSeedSource(): string
+{
+    Storage::put('source.sqlite', '');
+    $pdo = new PDO('sqlite:'.Storage::path('source.sqlite'));
+
+    foreach (['logs_2025' => 5, 'logs_2026' => 5, 'logs_critical' => 5, 'users' => 3, 'tmp_cache' => 2] as $table => $rows) {
+        $pdo->exec(sprintf('CREATE TABLE %s (id INTEGER PRIMARY KEY NOT NULL, note TEXT NOT NULL)', $table));
+
+        for ($id = 1; $id <= $rows; $id++) {
+            $pdo->exec(sprintf("INSERT INTO %s VALUES (%d, 'row %d')", $table, $id, $id));
+        }
+    }
+
+    return Storage::path('source.sqlite');
+}
+
+/** @return list<int> */
+function regexTablesTargetIds(string $table): array
+{
+    $pdo = new PDO('sqlite:'.Storage::path('target.sqlite'));
+    $exists = $pdo->query(sprintf("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '%s'", $table))->fetchColumn();
+
+    return (int) $exists === 0
+        ? []
+        : array_map(intval(...), $pdo->query(sprintf('SELECT id FROM %s ORDER BY id', $table))->fetchAll(PDO::FETCH_COLUMN));
+}
+
+it('copies tables matched by regex keys, lets the last match win and skips by regex', function (): void {
+    $source = regexTablesSeedSource();
+    Storage::put('target.sqlite', '');
+    Storage::put('clonio.json', (string) json_encode(['connections' => [
+        'production-db' => ['type' => 'sqlite', 'database' => $source, 'is_production' => true],
+        'staging' => ['type' => 'sqlite', 'database' => Storage::path('target.sqlite'), 'is_production' => false],
+    ]]));
+    Storage::put('regex.cloning.yaml', <<<'YAML'
+version: "1"
+connection: production-db
+options:
+  chunk_size: 2
+  enforce_column_types: false
+  drop_unknown_tables: false
+  disable_foreign_key_checks: true
+  faker_locale: en_US
+tables:
+  '/^logs_/':
+    rows:
+      strategy: last
+      limit: 2
+      sort_by: id
+  logs_critical:
+    rows:
+      strategy: full
+  Users:
+    rows:
+      strategy: full
+skip:
+  - '/^tmp_/'
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'regex.cloning.yaml', '--target' => 'staging'])
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(regexTablesTargetIds('logs_2025'))->toBe([4, 5])
+        ->and(regexTablesTargetIds('logs_2026'))->toBe([4, 5])
+        ->and(regexTablesTargetIds('logs_critical'))->toBe([1, 2, 3, 4, 5]) // the later literal entry wins
+        ->and(regexTablesTargetIds('users'))->toBe([1, 2, 3]) // 'Users' falls back to the only case-insensitive match
+        ->and(regexTablesTargetIds('tmp_cache'))->toBe([]); // skipped by the regex in skip:
+});
