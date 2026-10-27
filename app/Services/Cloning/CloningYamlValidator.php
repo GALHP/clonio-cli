@@ -400,6 +400,8 @@ class CloningYamlValidator
                     /** @var array<string, mixed> $fk */
                     if (! is_string($fk['table'] ?? null) || $fk['table'] === '') {
                         $errors[] = sprintf("%s: 'table' is required", $fkPrefix);
+                    } elseif ($this->isRegex($fk['table'])) {
+                        $errors[] = sprintf("%s: table '%s' must be a literal table name, not a regex", $fkPrefix, $fk['table']);
                     }
 
                     if (! is_string($fk['column'] ?? null) || $fk['column'] === '') {
@@ -532,6 +534,16 @@ class CloningYamlValidator
                 if (! is_string($use) || ! in_array($use, $validUseValues, true)) {
                     $errors[] = sprintf("%s: 'remapping' requires argument 'use' (one of: %s)", $prefix, implode(', ', $validUseValues));
                     break;
+                }
+
+                // Foreign keys are rewritten per concrete table name; a regex would
+                // never match one, leaving the referencing column unremapped.
+                $foreignKeys = is_array($args['foreign_keys'] ?? null) ? $args['foreign_keys'] : [];
+                foreach ($foreignKeys as $fk) {
+                    $fkTable = is_array($fk) ? ($fk['table'] ?? null) : null;
+                    if (is_string($fkTable) && $this->isRegex($fkTable)) {
+                        $errors[] = sprintf("%s: 'remapping' foreign key table '%s' must be a literal table name, not a regex", $prefix, $fkTable);
+                    }
                 }
 
                 break;

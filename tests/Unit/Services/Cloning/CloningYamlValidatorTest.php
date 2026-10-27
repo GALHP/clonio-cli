@@ -1226,3 +1226,22 @@ it('reports every key_remapping entry after a regex table', function (): void {
         "key_remapping.tables[1]: table 'ghosts' is not defined in the 'tables' section",
     ]);
 });
+
+it('rejects a regex foreign key table in key remapping', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['columns']['id'] = [
+        'strategy' => 'remapping',
+        'arguments' => [['use' => 'random_integer'], ['foreign_keys' => [['table' => '/^orders_/', 'column' => 'user_id'], 'ignored', ['table' => 'invoices', 'column' => 'user_id']]]],
+    ];
+    $config['key_remapping'] = ['tables' => [[
+        'table' => 'users',
+        'primary_key' => 'id',
+        'strategy' => 'random_integer',
+        'foreign_keys' => [['table' => '/^orders_/', 'column' => 'user_id']],
+    ]]];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([
+        "Table 'users', column 'id': 'remapping' foreign key table '/^orders_/' must be a literal table name, not a regex",
+        "key_remapping.tables[0].foreign_keys[0]: table '/^orders_/' must be a literal table name, not a regex",
+    ]);
+});
