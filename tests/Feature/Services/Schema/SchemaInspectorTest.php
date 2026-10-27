@@ -59,6 +59,24 @@ it('inspects a real SQLite database — tables, columns, keys, lengths', functio
 
 // ── MySQL: DB facade mocked with canned information_schema rows ──────────────
 
+it('reads the primary key order of a real SQLite table, not its column order', function (): void {
+    $dbPath = tempnam(sys_get_temp_dir(), 'clonio_insp_').'.sqlite';
+    $pdo = new PDO('sqlite:'.$dbPath);
+    $pdo->exec('CREATE TABLE role_user (user_id INTEGER NOT NULL, role_id INTEGER NOT NULL, note TEXT, PRIMARY KEY (role_id, user_id))');
+    $pdo = null;
+
+    $schema = (new SchemaInspector(new DatabaseConnectionService))->inspect(
+        new ConnectionData('src', DatabaseConnectionType::Sqlite, null, null, $dbPath, null, null, '', false),
+    );
+
+    @unlink($dbPath);
+
+    $table = $schema->getTable('role_user');
+    expect(findCol($table, 'role_id')->primaryKeyPosition)->toBe(1)
+        ->and(findCol($table, 'user_id')->primaryKeyPosition)->toBe(2)
+        ->and(findCol($table, 'note')->primaryKeyPosition)->toBeNull();
+});
+
 it('maps MySQL information_schema rows into schema data', function (): void {
     $connector = Mockery::mock(DatabaseConnectionService::class);
     $connector->shouldReceive('open')->andReturn('c');

@@ -19,6 +19,7 @@ composer test:unit         # Pest with coverage (min 95%)
 composer test:type-coverage  # Type coverage check (min 99%)
 composer test:types        # PHPStan static analysis (level max)
 composer test:lint         # Pint + Rector dry-run
+composer test:autoload     # Fail on PSR-4 autoload violations (dump-autoload --strict-psr)
 
 # Run a single test file
 ./vendor/bin/pest tests/Unit/BinaryResolverTest.php
@@ -71,6 +72,7 @@ The CLI repo is the command-line surface; the companion repo is the implementati
 The build workflow (`.github/workflows/build.yml`) triggers on `v*` tags:
 1. Runs the full test suite
 2. Builds 3 standalone binaries in parallel using SPC (`clonio-linux-x86_64`, `clonio-linux-aarch64`, `clonio-macos-aarch64`) — each is a PHAR merged with a PHP micro SAPI
+   - In parallel, builds the Docker image natively per arch (`docker-build`: amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`, no QEMU), smoke-tests each, pushes by digest; `docker` merges them into the multi-arch manifest on `ghcr.io/clonio-dev/clonio`
 3. Creates a GitHub release with all binaries and an auto-generated changelog
 
 ### Execution Mode Detection
@@ -102,6 +104,7 @@ In tests, isolate filesystem operations with `Storage::fake('local')` (no temp d
 - Coverage minimum: 95% (unit), 99% (type coverage)
 - Mutation score: 100% (`composer test:mutate:all`, run locally, not in CI); mark unkillable mutants with `// @pest-mutate-ignore: <Mutator>`
 - All tests extend `Tests\TestCase`
+- PSR-4 everywhere (incl. `tests/`): one class per file, path matching the namespace. Namespaced function overrides go in a functions-only file loaded via `require_once`, with any helper class in its own file (e.g. `tests/Unit/Services/Audit/Support/G7FunctionSpies.php` + `G7FunctionSpy.php`). `composer test:autoload` (part of `composer test`) enforces this.
 
 ## Specs and Docs
 

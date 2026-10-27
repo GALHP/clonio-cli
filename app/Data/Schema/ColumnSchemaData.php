@@ -23,5 +23,9 @@ final readonly class ColumnSchemaData
         // PostgreSQL GENERATED ALWAYS AS, SQLite generated, SQL Server computed).
         // The database computes these values, so Clonio never copies them.
         public bool $generated = false,
+        // 1-based position of the column within the primary key, which can differ
+        // from its position in the table. Null when the column is not part of the
+        // primary key or the driver does not report it.
+        public ?int $primaryKeyPosition = null,
     ) {}
 }
