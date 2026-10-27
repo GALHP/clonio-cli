@@ -514,16 +514,15 @@ it('prints the ready message followed by a blank line when audit channels exist'
 });
 
 it('reports the exact .env path when a new .env cannot be written', function (): void {
+    // Mock Storage::put() to fail instead of chmod-ing the directory: root
+    // ignores permission bits, and the dev container runs as root under
+    // rootless Docker/Podman.
     g9_forgetAppKey();
 
-    $root = Storage::path('');
-    chmod($root, 0500);
+    Storage::shouldReceive('exists')->with('.env')->andReturn(false);
+    Storage::shouldReceive('put')->with('.env', Mockery::type('string'))->andReturn(false);
 
-    try {
-        [$exit, $display] = g9_runInit();
-    } finally {
-        chmod($root, 0755);
-    }
+    [$exit, $display] = g9_runInit();
 
     expect($exit)->toBe(ExitCode::IoError->value)
         ->and($display)->toEndWith(
