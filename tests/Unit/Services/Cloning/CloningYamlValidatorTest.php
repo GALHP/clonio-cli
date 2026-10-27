@@ -144,6 +144,22 @@ it('returns error when last strategy has limit less than 1', function (): void {
     expect(implode(' ', $errors))->toContain('limit');
 });
 
+it('accepts the schema row strategy without a limit', function (): void {
+    $validator = new CloningYamlValidator;
+    $config = makeValidConfig();
+    $config['tables']['users']['rows'] = ['strategy' => 'schema', 'clear' => 'delete'];
+
+    expect($validator->validate($config))->toBe([]);
+});
+
+it('hints at the schema strategy when first or last has limit 0', function (): void {
+    $validator = new CloningYamlValidator;
+    $config = makeValidConfig();
+    $config['tables']['users']['rows'] = ['strategy' => 'first', 'limit' => 0];
+
+    expect(implode(' ', $validator->validate($config)))->toContain("use strategy 'schema'");
+});
+
 it('passes when first strategy has a valid limit', function (): void {
     $validator = new CloningYamlValidator;
     $config = makeValidConfig();
@@ -832,3 +848,286 @@ it('flags a foreign key entry that is not an object and one missing its column',
         ->toContain('key_remapping.tables[0].foreign_keys[0]: must be an object')
         ->toContain("key_remapping.tables[0].foreign_keys[1]: 'column' is required");
 });
+
+it('accepts options.remap_keys when boolean', function (): void {
+    $config = makeValidConfig();
+    $config['options']['remap_keys'] = false;
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([]);
+});
+
+it('flags options.remap_keys when not a boolean', function (): void {
+    $config = makeValidConfig();
+    $config['options']['remap_keys'] = 'nope';
+
+    expect((new CloningYamlValidator)->validate($config))
+        ->toContain("Field 'options.remap_keys' must be a boolean");
+});
+
+it('explains that an unquoted null strategy must be quoted', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['columns']['gender'] = ['strategy' => null];
+
+    $errors = (new CloningYamlValidator)->validate($config);
+
+    expect($errors)->toHaveCount(1)
+        ->and($errors[0])->toContain('gender')
+        ->toContain('strategy: "null"');
+});
+
+it('keeps the generic error when the column strategy is missing', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['columns']['gender'] = ['faker_method' => 'x'];
+
+    $errors = (new CloningYamlValidator)->validate($config);
+
+    expect($errors)->toHaveCount(1)
+        ->and($errors[0])->toContain('strategy must be one of');
+});
+
+it('validates recreate_tables as optional boolean', function (mixed $value, bool $valid): void {
+    $data = [
+        'version' => '1',
+        'connection' => 'production-db',
+        'options' => [
+            'chunk_size' => 1000,
+            'enforce_column_types' => false,
+            'drop_unknown_tables' => false,
+            'recreate_tables' => $value,
+            'disable_foreign_key_checks' => true,
+            'faker_locale' => 'en_US',
+        ],
+        'tables' => ['users' => ['rows' => ['strategy' => 'full']]],
+    ];
+
+    $errors = (new CloningYamlValidator)->validate($data);
+
+    if ($valid) {
+        expect($errors)->toBe([]);
+    } else {
+        expect($errors)->toContain("Field 'options.recreate_tables' must be a boolean");
+    }
+})->with([
+    'true' => [true, true],
+    'false' => [false, true],
+    'string' => ['yes', false],
+]);
+
+it('accepts the exclude column strategy without extra fields', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['columns']['internal_note'] = ['strategy' => 'exclude'];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([]);
+});
+
+/**
+ * @param  array<string, mixed>  $columns
+ * @return list<string>
+ */
+function g6_validateColumns(array $columns): array
+{
+    $config = makeValidConfig();
+    $config['tables']['users']['columns'] = $columns;
+
+    return (new CloningYamlValidator)->validate($config);
+}
+
+/**
+ * @param  array<string, mixed>  $keyRemapping
+ * @return list<string>
+ */
+function g6_validateKeyRemapping(array $keyRemapping): array
+{
+    $config = makeValidConfig();
+    $config['key_remapping'] = $keyRemapping;
+
+    return (new CloningYamlValidator)->validate($config);
+}
+
+it('accepts version as the integer 1', function (): void {
+    $config = makeValidConfig();
+    $config['version'] = 1;
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([]);
+});
+
+it('rejects version as the integers 0 and 2', function (int $version): void {
+    $config = makeValidConfig();
+    $config['version'] = $version;
+
+    expect((new CloningYamlValidator)->validate($config))->toBe(["Field 'version' must be \"1\""]);
+})->with([0, 2]);
+
+it('accepts a chunk_size of exactly 1', function (): void {
+    $config = makeValidConfig();
+    $config['options']['chunk_size'] = 1;
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([]);
+});
+
+it('rejects invalid chunk_size values', function (mixed $chunkSize): void {
+    $config = makeValidConfig();
+    $config['options']['chunk_size'] = $chunkSize;
+
+    expect((new CloningYamlValidator)->validate($config))->toBe(["Field 'options.chunk_size' must be an integer >= 1"]);
+})->with([
+    'string' => ['500'],
+    'zero' => [0],
+]);
+
+it('reports each missing required boolean option', function (string $field): void {
+    $config = makeValidConfig();
+    unset($config['options'][$field]);
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([sprintf("Field 'options.%s' must be a boolean", $field)]);
+})->with(['enforce_column_types', 'drop_unknown_tables', 'disable_foreign_key_checks']);
+
+it('reports every non-object table, not just the first', function (): void {
+    $config = makeValidConfig();
+    $config['tables'] = ['a' => 'x', 'b' => 'y'];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([
+        "Table 'a': must be an object",
+        "Table 'b': must be an object",
+    ]);
+});
+
+it('stops validating rows after an invalid row strategy', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['rows'] = ['strategy' => 'bogus', 'clear' => 'bogus'];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([
+        "Table 'users': rows.strategy must be one of: full, first, last, schema, skip",
+    ]);
+});
+
+it('accepts a first/last limit of exactly 1', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['rows'] = ['strategy' => 'last', 'limit' => 1];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([]);
+});
+
+it('rejects a non-integer first limit', function (): void {
+    $config = makeValidConfig();
+    $config['tables']['users']['rows'] = ['strategy' => 'first', 'limit' => '5'];
+
+    expect((new CloningYamlValidator)->validate($config))->toBe([
+        "Table 'users': rows.limit must be an integer >= 1 when strategy is 'first'",
+    ]);
+});
+
+it('reports every invalid column, not just the first', function (): void {
+    expect(g6_validateColumns([
+        'a' => 'x',
+        'b' => ['strategy' => null],
+        'c' => ['strategy' => 'bogus'],
+        'd' => ['strategy' => null],
+        'e' => ['strategy' => 'bogus'],
+        'f' => 'y',
+    ]))->toBe([
+        "Table 'users', column 'a': must be an object",
+        "Table 'users', column 'b': strategy is the YAML null literal — quote it as strategy: \"null\" to set the column to NULL",
+        "Table 'users', column 'c': strategy must be one of: keep, fake, hash, mask, null, static, template, remapping, exclude",
+        "Table 'users', column 'd': strategy is the YAML null literal — quote it as strategy: \"null\" to set the column to NULL",
+        "Table 'users', column 'e': strategy must be one of: keep, fake, hash, mask, null, static, template, remapping, exclude",
+        "Table 'users', column 'f': must be an object",
+    ]);
+});
+
+it('accepts a key_remapping section without tables', function (): void {
+    expect(g6_validateKeyRemapping([]))->toBe([]);
+});
+
+it('accepts a key_remapping section with an empty tables list', function (): void {
+    expect(g6_validateKeyRemapping(['tables' => []]))->toBe([]);
+});
+
+it('reports every invalid key_remapping table entry', function (): void {
+    expect(g6_validateKeyRemapping(['tables' => [
+        'x',
+        'y',
+        ['table' => ''],
+        ['primary_key' => 'id'],
+        ['table' => 'users', 'primary_key' => 'id', 'strategy' => 'new_uuid'],
+        ['table' => 'users'],
+        ['table' => 'users'],
+    ]]))->toBe([
+        'key_remapping.tables[0]: must be an object',
+        'key_remapping.tables[1]: must be an object',
+        "key_remapping.tables[2]: 'table' is required",
+        "key_remapping.tables[3]: 'table' is required",
+        "key_remapping.tables[5]: duplicate table 'users' in key_remapping.tables",
+        "key_remapping.tables[6]: duplicate table 'users' in key_remapping.tables",
+    ]);
+});
+
+it('rejects empty key_remapping primary key and foreign key fields', function (): void {
+    expect(g6_validateKeyRemapping(['tables' => [
+        [
+            'table' => 'users',
+            'primary_key' => '',
+            'strategy' => 'random_integer',
+            'foreign_keys' => [['table' => '', 'column' => '']],
+        ],
+    ]]))->toBe([
+        "key_remapping.tables[0]: 'primary_key' is required",
+        "key_remapping.tables[0].foreign_keys[0]: 'table' is required",
+        "key_remapping.tables[0].foreign_keys[0]: 'column' is required",
+    ]);
+});
+
+it('rejects an empty or non-string faker_method as missing', function (mixed $method): void {
+    expect(g6_validateColumns([
+        'email' => ['strategy' => 'fake', 'faker_method' => $method, 'faker_arguments' => []],
+    ]))->toBe(["Table 'users', column 'email': 'fake' strategy requires 'faker_method'"]);
+})->with([
+    'empty' => [''],
+    'integer' => [123],
+]);
+
+it('accepts a valid mask column including zero visible chars and a multibyte mask char', function (): void {
+    expect(g6_validateColumns([
+        'phone' => ['strategy' => 'mask', 'visible_chars' => 0, 'mask_char' => '€', 'preserve_format' => false],
+        'email' => ['strategy' => 'mask', 'visible_chars' => 3, 'mask_char' => '*', 'preserve_format' => true],
+    ]))->toBe([]);
+});
+
+it('reports every missing mask field', function (): void {
+    expect(g6_validateColumns([
+        'phone' => ['strategy' => 'mask'],
+    ]))->toBe([
+        "Table 'users', column 'phone': 'mask' strategy requires 'visible_chars' (integer >= 0)",
+        "Table 'users', column 'phone': 'mask' strategy requires 'mask_char' (exactly 1 character)",
+        "Table 'users', column 'phone': 'mask' strategy requires 'preserve_format' (boolean)",
+    ]);
+});
+
+it('rejects invalid mask field values', function (mixed $visibleChars, mixed $maskChar, mixed $preserveFormat): void {
+    expect(g6_validateColumns([
+        'phone' => ['strategy' => 'mask', 'visible_chars' => $visibleChars, 'mask_char' => $maskChar, 'preserve_format' => $preserveFormat],
+    ]))->toBe([
+        "Table 'users', column 'phone': 'mask' strategy requires 'visible_chars' (integer >= 0)",
+        "Table 'users', column 'phone': 'mask' strategy requires 'mask_char' (exactly 1 character)",
+        "Table 'users', column 'phone': 'mask' strategy requires 'preserve_format' (boolean)",
+    ]);
+})->with([
+    'negative / too long / int' => [-1, '**', 1],
+    'string / empty / string' => ['3', '', 'yes'],
+    'float / non-string / null' => [2.0, 1, null],
+]);
+
+it('accepts both remapping use values', function (string $use): void {
+    expect(g6_validateColumns([
+        'id' => ['strategy' => 'remapping', 'arguments' => [['use' => $use]]],
+    ]))->toBe([]);
+})->with(['random_integer', 'new_uuid']);
+
+it('rejects an invalid remapping use value', function (mixed $use): void {
+    expect(g6_validateColumns([
+        'id' => ['strategy' => 'remapping', 'arguments' => [['use' => $use]]],
+    ]))->toBe(["Table 'users', column 'id': 'remapping' requires argument 'use' (one of: random_integer, new_uuid)"]);
+})->with([
+    'integer' => [123],
+    'unknown string' => ['sequential'],
+]);

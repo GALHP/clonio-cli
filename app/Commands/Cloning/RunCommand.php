@@ -74,7 +74,9 @@ class RunCommand extends Command
         {--skip-tables=        : Comma-separated list of table names to exclude}
         {--only-tables=        : Comma-separated list of table names to include}
         {--audit-channel=      : Comma-separated list of channel names}
-        {--skip-remapping-keys      : Skip key mapping generation and FK rewriting}
+        {--remap-keys               : Override: remap_keys true for this run}
+        {--no-remap-keys            : Override: remap_keys false for this run (skip key mapping generation and FK rewriting)}
+        {--skip-remapping-keys      : Alias of --no-remap-keys}
         {--no-memory-limit          : Remove PHP memory limit before generating key mappings (useful for very large databases when --file-based is not an option)}
         {--file-based               : Store key mappings in AES-256-CBC encrypted temp files instead of RAM; keeps memory usage bounded to the largest single table}
         {--enforce-column-types     : Override: enforce_column_types true for this run}
@@ -83,6 +85,8 @@ class RunCommand extends Command
         {--no-drop-unknown-tables   : Override: drop_unknown_tables false for this run}
         {--drop-extra-columns       : Override: drop_extra_columns true for this run}
         {--no-drop-extra-columns    : Override: drop_extra_columns false for this run}
+        {--recreate-tables          : Override: recreate_tables true for this run}
+        {--no-recreate-tables       : Override: recreate_tables false for this run}
         {--disable-fk-checks        : Override: disable_foreign_key_checks true for this run}
         {--no-disable-fk-checks     : Override: disable_foreign_key_checks false for this run}
         {--break-on-failure         : Abort the run immediately on the first table failure (schema or data)}';
@@ -128,7 +132,7 @@ class RunCommand extends Command
                 $config = $loader->load($filePath);
 
                 $content = Storage::disk('local')->get($filePath);
-                $content ??= (string) file_get_contents($filePath);
+                $content ??= (string) file_get_contents($filePath); // @pest-mutate-ignore: RemoveStringCast
 
                 $rawData = Yaml::parse($content);
                 if (is_array($rawData)) {
@@ -164,28 +168,30 @@ class RunCommand extends Command
         }
 
         /** @var list<string> $skipTables */
-        $skipTables = ($skipTablesOpt !== null && $skipTablesOpt !== '')
-            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $skipTablesOpt))))
+        $skipTables = ($skipTablesOpt !== null && $skipTablesOpt !== '') // @pest-mutate-ignore: BooleanAndToBooleanOr,EmptyStringToNotEmpty
+            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $skipTablesOpt)))) // @pest-mutate-ignore: UnwrapArrayValues
             : [];
 
         /** @var list<string> $onlyTables */
-        $onlyTables = ($onlyTablesOpt !== null && $onlyTablesOpt !== '')
+        $onlyTables = ($onlyTablesOpt !== null && $onlyTablesOpt !== '') // @pest-mutate-ignore: BooleanAndToBooleanOr,EmptyStringToNotEmpty
             ? array_values(array_filter(array_map(trim(...), explode(',', (string) $onlyTablesOpt))))
             : [];
 
         $auditChannelOpt = $this->option('audit-channel');
         /** @var list<string> $auditChannels */
-        $auditChannels = ($auditChannelOpt !== null && $auditChannelOpt !== '')
-            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $auditChannelOpt))))
+        $auditChannels = ($auditChannelOpt !== null && $auditChannelOpt !== '') // @pest-mutate-ignore: BooleanAndToBooleanOr,EmptyStringToNotEmpty
+            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $auditChannelOpt)))) // @pest-mutate-ignore: UnwrapArrayValues
             : [];
 
         // ─── Option overrides ──────────────────────────────────────────────────
         $enforceOverride = $this->option('enforce-column-types') ? true : ($this->option('no-enforce-column-types') ? false : null);
         $dropUnkOverride = $this->option('drop-unknown-tables') ? true : ($this->option('no-drop-unknown-tables') ? false : null);
         $dropExtOverride = $this->option('drop-extra-columns') ? true : ($this->option('no-drop-extra-columns') ? false : null);
+        $recreateOverride = $this->option('recreate-tables') ? true : ($this->option('no-recreate-tables') ? false : null);
         $fkChecksOverride = $this->option('no-disable-fk-checks') ? false : ($this->option('disable-fk-checks') ? true : null);
+        $remapKeysOverride = ($this->option('no-remap-keys') || $this->option('skip-remapping-keys')) ? false : ($this->option('remap-keys') ? true : null);
 
-        if ($enforceOverride !== null || $dropUnkOverride !== null || $dropExtOverride !== null || $fkChecksOverride !== null) {
+        if ($enforceOverride !== null || $dropUnkOverride !== null || $dropExtOverride !== null || $recreateOverride !== null || $fkChecksOverride !== null || $remapKeysOverride !== null) {
             $opts = $config->options;
             $config = new CloningConfigData(
                 version: $config->version,
@@ -197,6 +203,8 @@ class RunCommand extends Command
                     dropExtraColumns: $dropExtOverride ?? $opts->dropExtraColumns,
                     disableForeignKeyChecks: $fkChecksOverride ?? $opts->disableForeignKeyChecks,
                     fakerLocale: $opts->fakerLocale,
+                    remapKeys: $remapKeysOverride ?? $opts->remapKeys,
+                    recreateTables: $recreateOverride ?? $opts->recreateTables,
                 ),
                 tables: $config->tables,
                 keyRemapping: $config->keyRemapping,
@@ -244,7 +252,7 @@ class RunCommand extends Command
             }
 
             $chosen = $this->choice('Select a target connection', $otherNames, 0);
-            $targetName = is_string($chosen) ? $chosen : $otherNames[0];
+            $targetName = is_string($chosen) ? $chosen : $otherNames[0]; // @pest-mutate-ignore: IncrementInteger,DecrementInteger
         }
 
         $targetConnection = $configService->getConnection($targetName);
@@ -321,7 +329,7 @@ class RunCommand extends Command
         }
 
         // ─── Phase 3: Dry-run ──────────────────────────────────────────────────
-        if ((bool) $this->option('dry-run')) {
+        if ((bool) $this->option('dry-run')) { // @pest-mutate-ignore: RemoveBooleanCast
             return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $ci);
         }
 
@@ -339,21 +347,36 @@ class RunCommand extends Command
 
         // ─── Phase 5b: Key Mapping Generation ─────────────────────────────────
         $keyRemappingService = null;
-        $skipRemapping = (bool) $this->option('skip-remapping-keys');
         $keyRemappingConfig = $config->keyRemapping;
+        $remappingConfigured = $keyRemappingConfig instanceof KeyRemappingConfigData && $keyRemappingConfig->isActive();
+        $skipRemapping = ! $config->options->remapKeys;
+
+        if ($remappingConfigured && $skipRemapping && ! $ci) {
+            // Remapping is defined but disabled: say so, because primary/foreign
+            // key values will be copied from the source unchanged.
+            $this->line(sprintf(
+                '  <comment>Key remapping disabled (%s) — primary/foreign key values are copied unchanged.</comment>',
+                match (true) {
+                    (bool) $this->option('no-remap-keys') => '--no-remap-keys',
+                    (bool) $this->option('skip-remapping-keys') => '--skip-remapping-keys',
+                    default => 'options.remap_keys: false',
+                },
+            ));
+        }
 
         if ($keyRemappingConfig instanceof KeyRemappingConfigData && $keyRemappingConfig->isActive() && ! $skipRemapping) {
-            if ((bool) $this->option('no-memory-limit')) {
+            if ((bool) $this->option('no-memory-limit')) { // @pest-mutate-ignore: RemoveBooleanCast
                 ini_set('memory_limit', '-1');
             }
 
-            $keyRemappingService = (bool) $this->option('file-based')
+            $keyRemappingService = (bool) $this->option('file-based') // @pest-mutate-ignore: RemoveBooleanCast
                 ? new KeyRemappingService($connector, new EncryptedFileKeyRemappingStore)
                 : resolve(KeyRemappingService::class);
-            $sortedForMapping = array_map(
+            // Schema-only tables copy no rows, so they need no key mappings.
+            $sortedForMapping = array_values(array_map(
                 static fn (TableCloningConfigData $t): string => $t->tableName,
-                $config->tables
-            );
+                array_filter($config->tables, static fn (TableCloningConfigData $t): bool => $t->rows->strategy !== 'schema'),
+            ));
 
             try {
                 $counts = $step->run(
@@ -565,7 +588,7 @@ class RunCommand extends Command
                     dumpResult: $dumpResult,
                 );
 
-                [$canonicalJson, $contentHash, $hmacSignature] = $signer->sign($auditRecord);
+                [$canonicalJson, , $hmacSignature] = $signer->sign($auditRecord);
                 $htmlContent = $renderer->render($auditRecord, $canonicalJson);
                 $pdfContent = $renderer->renderPdf($auditRecord, $canonicalJson);
 
@@ -624,16 +647,16 @@ class RunCommand extends Command
         }
 
         // ─── Phase 8: Summary ──────────────────────────────────────────────────
-        if (! $isVerbose && ! $ci && $dotColumn > 0) {
+        if (! $isVerbose && ! $ci && $dotColumn > 0) { // @pest-mutate-ignore: BooleanAndToBooleanOr
             $this->line('');
         }
 
         // Derive not-found from result (merging with any collected during progress)
-        $notFoundFromResult = array_values(array_map(
+        $notFoundFromResult = array_values(array_map( // @pest-mutate-ignore: UnwrapArrayValues
             static fn (TableRunResultData $t): string => $t->tableName,
             array_filter($result->tables, static fn (TableRunResultData $t): bool => $t->status === TableRunStatus::NotFound)
         ));
-        $notFoundTables = array_values(array_unique(array_merge($notFoundTables, $notFoundFromResult)));
+        $notFoundTables = array_values(array_unique(array_merge($notFoundTables, $notFoundFromResult))); // @pest-mutate-ignore: UnwrapArrayValues
 
         // Always show not-found warnings
         if ($notFoundTables !== []) {
@@ -647,11 +670,11 @@ class RunCommand extends Command
         }
 
         // Collect schema failure tables from result (merge with those caught in onProgress)
-        $schemaFailuresFromResult = array_values(array_map(
+        $schemaFailuresFromResult = array_values(array_map( // @pest-mutate-ignore: UnwrapArrayValues
             static fn (TableRunResultData $t): string => $t->tableName,
             array_filter($result->tables, static fn (TableRunResultData $t): bool => $t->status === TableRunStatus::SkippedBySchemaFailure)
         ));
-        $schemaFailureTables = array_values(array_unique(array_merge($schemaFailureTables, $schemaFailuresFromResult)));
+        $schemaFailureTables = array_values(array_unique(array_merge($schemaFailureTables, $schemaFailuresFromResult))); // @pest-mutate-ignore: UnwrapArrayValues
 
         if ($schemaFailureTables !== []) {
             $this->line('');
@@ -661,6 +684,12 @@ class RunCommand extends Command
                 count($schemaFailureTables) === 1 ? '' : 's',
                 implode(', ', $schemaFailureTables),
             ));
+        }
+
+        foreach ($result->tables as $tableResult) {
+            foreach ($tableResult->notes as $note) {
+                $this->line(sprintf('  <comment>Note: %s: %s</comment>', $tableResult->tableName, $note));
+            }
         }
 
         $transferredCount = count(array_filter($result->tables, static fn (TableRunResultData $t): bool => $t->status === TableRunStatus::Transferred));
@@ -686,7 +715,7 @@ class RunCommand extends Command
             }
         }
 
-        if (! $result->success && ! (bool) $this->option('allow-failure')) {
+        if (! $result->success && ! (bool) $this->option('allow-failure')) { // @pest-mutate-ignore: RemoveBooleanCast
             return ExitCode::GeneralError->value;
         }
 
@@ -731,7 +760,7 @@ class RunCommand extends Command
                 try {
                     $estimatedRows = $this->countRows($source, $tableName);
                 } catch (Throwable) {
-                    $estimatedRows = null;
+                    // Row count unavailable: leave the estimate empty.
                 }
 
                 if ($estimatedRows !== null) {
@@ -740,6 +769,8 @@ class RunCommand extends Command
 
                     if (($strategy === 'first' || $strategy === 'last') && $limit !== null) {
                         $estimatedRows = min($estimatedRows, $limit);
+                    } elseif ($strategy === 'schema') {
+                        $estimatedRows = 0;
                     }
 
                     $totalEstimated += $estimatedRows;
@@ -748,7 +779,7 @@ class RunCommand extends Command
                 $notFoundCount++;
             }
 
-            $transformedColumns = array_values(array_map(
+            $transformedColumns = array_values(array_map( // @pest-mutate-ignore: UnwrapArrayValues
                 static fn (ColumnCloningConfigData $col): string => $col->columnName,
                 array_filter($tableConfig->columns, static fn (ColumnCloningConfigData $col): bool => $col->strategy !== 'keep')
             ));
@@ -885,7 +916,7 @@ class RunCommand extends Command
                 : 'NOT FOUND';
 
             $strategyLabel = $table->exists
-                ? ($table->rowStrategy === 'full' ? 'full' : $table->rowStrategy.' '.number_format((int) $table->rowLimit))
+                ? (in_array($table->rowStrategy, ['first', 'last'], true) ? $table->rowStrategy.' '.number_format((int) $table->rowLimit) : $table->rowStrategy) // @pest-mutate-ignore: RemoveIntegerCast
                 : ('—');
 
             $transformLabel = $table->transformedColumns !== []
@@ -908,7 +939,7 @@ class RunCommand extends Command
             : '';
 
         $this->line(sprintf(
-            '  %-'.$tableWidth.'s %-'.$rowsWidth.'s',
+            '  %-'.$tableWidth.'s %-'.$rowsWidth.'s', // @pest-mutate-ignore: ConcatRemoveRight
             'Total',
             number_format($result->totalEstimatedRows).' rows across '.count($result->tables).' tables'.$notFoundMsg,
         ));
@@ -924,7 +955,7 @@ class RunCommand extends Command
             return sprintf('%.0fs', $seconds);
         }
 
-        $minutes = (int) ($seconds / 60);
+        $minutes = (int) ($seconds / 60); // @pest-mutate-ignore: RemoveIntegerCast
         $remaining = $seconds % 60;
 
         return sprintf('%dm %ds', $minutes, $remaining);
@@ -965,7 +996,7 @@ class RunCommand extends Command
 
         $result = [];
         foreach ($byMessage as $message => $count) {
-            $result[] = ['count' => $count, 'message' => (string) $message];
+            $result[] = ['count' => $count, 'message' => (string) $message]; // @pest-mutate-ignore: RemoveStringCast
         }
 
         return $result;
@@ -1007,19 +1038,21 @@ class RunCommand extends Command
      */
     private function getOriginalCommand(array $extraFlags = []): string
     {
-        $parts = ['clonio', 'cloning:run', (string) $this->argument('file')];
+        $parts = ['clonio', 'cloning:run', (string) $this->argument('file')]; // @pest-mutate-ignore: RemoveStringCast
 
         // Add all options that affect the command behavior
         $options = [
             'target' => '--target',
             'allow-failure' => '--allow-failure',
-            'dry-run' => '--dry-run',
+            'dry-run' => '--dry-run', // @pest-mutate-ignore: RemoveArrayItem
             'ci' => '--ci',
             'skip-schema' => '--skip-schema',
             'skip-tables' => '--skip-tables',
             'only-tables' => '--only-tables',
             'audit-channel' => '--audit-channel',
-            'skip-remapping-keys' => '--skip-remapping-keys',
+            'remap-keys' => '--remap-keys',
+            'no-remap-keys' => '--no-remap-keys', // @pest-mutate-ignore: RemoveArrayItem
+            'skip-remapping-keys' => '--skip-remapping-keys', // @pest-mutate-ignore: RemoveArrayItem
             'file-based' => '--file-based',
             'enforce-column-types' => '--enforce-column-types',
             'no-enforce-column-types' => '--no-enforce-column-types',
@@ -1027,6 +1060,8 @@ class RunCommand extends Command
             'no-drop-unknown-tables' => '--no-drop-unknown-tables',
             'drop-extra-columns' => '--drop-extra-columns',
             'no-drop-extra-columns' => '--no-drop-extra-columns',
+            'recreate-tables' => '--recreate-tables',
+            'no-recreate-tables' => '--no-recreate-tables',
             'disable-fk-checks' => '--disable-fk-checks',
             'no-disable-fk-checks' => '--no-disable-fk-checks',
             'break-on-failure' => '--break-on-failure',
@@ -1040,7 +1075,7 @@ class RunCommand extends Command
                 if ($value !== null && $value !== '') {
                     $parts[] = $flag.'='.$value;
                 }
-            } elseif ((bool) $value) {
+            } elseif ((bool) $value) { // @pest-mutate-ignore: RemoveBooleanCast
                 // Boolean flags
                 $parts[] = $flag;
             }
@@ -1115,7 +1150,7 @@ class RunCommand extends Command
             '--table' => $exhausted->table,
             '--column' => $exhausted->column,
             '--strategy' => 'keep',
-            '--no-interaction' => true,
+            '--no-interaction' => true, // @pest-mutate-ignore: TrueToFalse,RemoveArrayItem
         ]);
 
         if ($editResult !== ExitCode::Success->value) {

@@ -2,9 +2,97 @@
 
 All notable changes to `clonio-cli` will be documented in this file.
 
+## v1.3.0 - 2026-10-19
+
+### What's Changed
+
+* ci: tag the commit the preflight verified instead of HEAD by @rokde in https://github.com/clonio-dev/clonio-cli/pull/202
+* chore(deps): upgrade to Laravel Zero 13 and bump all dependencies by @rokde in https://github.com/clonio-dev/clonio-cli/pull/201
+* chore: ignore local .claude directory by @rokde in https://github.com/clonio-dev/clonio-cli/pull/203
+* feat(cloning): add recreate_tables option to rebuild drifted target tables by @rokde in https://github.com/clonio-dev/clonio-cli/pull/204
+* docs: align audit, matchers and column-edit command docs with the CLI by @rokde in https://github.com/clonio-dev/clonio-cli/pull/205
+* fix(audit): keep delivery flags when updating a channel by @rokde in https://github.com/clonio-dev/clonio-cli/pull/206
+* feat(cloning): skip generated columns and add exclude column strategy by @rokde in https://github.com/clonio-dev/clonio-cli/pull/207
+* feat(cloning): add schema row strategy for structure-only tables by @rokde in https://github.com/clonio-dev/clonio-cli/pull/208
+
+**Full Changelog**: https://github.com/clonio-dev/clonio-cli/compare/v1.2.0...v1.3.0
+
+## v1.2.0 - 2026-10-19
+
+### What's Changed
+
+* Update CHANGELOG for v1.1.1 release. by @rokde in https://github.com/clonio-dev/clonio-cli/pull/187
+* ci(release): update CHANGELOG via pull request after each release by @rokde in https://github.com/clonio-dev/clonio-cli/pull/188
+* chore(deps): bump the github-actions group with 2 updates by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/192
+* chore(deps): bump symfony/yaml from 8.1.6 to 8.1.8 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/191
+* chore(deps): bump the github-actions group with 4 updates by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/195
+* chore(deps): bump symfony/yaml from 8.1.8 to 8.1.9 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/194
+* feat(cloning): remap_keys config option with --remap-keys/--no-remap-keys overrides by @rokde in https://github.com/clonio-dev/clonio-cli/pull/197
+* ci: fix Composer cache path so dependency downloads are cached by @rokde in https://github.com/clonio-dev/clonio-cli/pull/198
+* fix(cloning): quote and escape generated YAML scalars correctly by @rokde in https://github.com/clonio-dev/clonio-cli/pull/199
+* chore(deps-dev): bump larastan/larastan from 3.12.2 to 3.13.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/193
+* ci: verify the release build on all targets before tagging by @rokde in https://github.com/clonio-dev/clonio-cli/pull/200
+
+**Full Changelog**: https://github.com/clonio-dev/clonio-cli/compare/v1.1.1...v1.2.0
+
+## v1.1.1 - 2026-09-27
+
+### What's Changed
+
+* ci(build): pin libjpeg-turbo to 3.1.4.1 for SPC builds by @rokde in https://github.com/clonio-dev/clonio-cli/pull/186
+
+**Full Changelog**: https://github.com/clonio-dev/clonio-cli/compare/v1.1.0...v1.1.1
+
+## v1.1.0 - 2026-09-27 (tag only)
+
+The release build for this tag failed on Linux (libjpeg-turbo 3.2.0), so no GitHub release was published. v1.1.1 ships these changes.
+
+### What's Changed
+
+* docs(connection): mention SQL Server in connection:test Cipher column by @rokde in https://github.com/clonio-dev/clonio-cli/pull/185
+* feat(connection): show TLS mode in connection:test overview by @rokde in https://github.com/clonio-dev/clonio-cli/pull/184
+* fix(connection): require a name for non-interactive connection:delete with multiple connections by @rokde in https://github.com/clonio-dev/clonio-cli/pull/183
+* ci(connection): assert encryption state for SQL Server TLS matrix rows by @rokde in https://github.com/clonio-dev/clonio-cli/pull/182
+* test(connection): drop stale prompt expectations in non-interactive update test by @rokde in https://github.com/clonio-dev/clonio-cli/pull/181
+* fix(connection): require a name for non-interactive connection:update with multiple connections by @rokde in https://github.com/clonio-dev/clonio-cli/pull/180
+* feat(connection): secure transport (TLS) for connections by @rokde in https://github.com/clonio-dev/clonio-cli/pull/179
+* fix(logging): redirect storage path for packaged binaries by @rokde in https://github.com/clonio-dev/clonio-cli/pull/178
+* fix(anonymization): resolve magic Faker formatters in template strategy by @rokde in https://github.com/clonio-dev/clonio-cli/pull/177
+* chore(deps): bump the github-actions group with 7 updates by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/175
+* Dependencies by @rokde in https://github.com/clonio-dev/clonio-cli/pull/174
+* refactor: simplify null-coalescing assignments and add stricter type hints for lambdas (2f638cb)
+* chore: switch rector configuration to composer-based setup and remove unused rules (be46632)
+* chore(deps): bump anthropics/claude-code-action from 1.0.148 to 1.0.165 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/152
+* chore(deps): bump guzzlehttp/guzzle from 7.12.0 to 7.15.2 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/162
+* chore(deps): bump guzzlehttp/psr7 from 2.12.0 to 2.13.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/160
+* chore(deps): bump docker/setup-buildx-action from 4.1.0 to 4.2.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/151
+* chore(deps-dev): bump laravel/pao from 1.1.1 to 1.1.2 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/147
+* chore(deps-dev): bump pestphp/pest from 4.7.3 to 4.7.4 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/146
+* chore(deps): bump actions/cache from 5.0.5 to 6.1.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/145
+* chore(deps): bump stefanzweifel/git-auto-commit-action by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/144
+* chore(deps): bump symfony/yaml from 8.1.0 to 8.1.1 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/148
+* docs: add Plumb score badge to README (269123b)
+* ci: add workflow to update PR description from commit log by @rokde in https://github.com/clonio-dev/clonio-cli/pull/173
+* ci: remove dependabot-auto-merge workflow by @rokde in https://github.com/clonio-dev/clonio-cli/pull/172
+* chore(deps): bump actions/checkout from 6.0.3 to 7.0.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/140
+* ci(build): add missing zip extension for static builds by @RVxLab in https://github.com/clonio-dev/clonio-cli/pull/154
+* ci: trigger changelog update on both `published` and `released` release events (85e70a7, 7509502)
+
+**Full Changelog**: https://github.com/clonio-dev/clonio-cli/compare/v1.0.2...v1.1.0
+
+## v1.0.2 - 2026-06-17
+
+### What's Changed
+
+* ci(build): update dependency order and remove unused build artifact steps by @rokde in https://github.com/clonio-dev/clonio-cli/pull/138
+* ci(release): add error handling for git tag and push operations in Makefile (1cabf56)
+
+**Full Changelog**: https://github.com/clonio-dev/clonio-cli/compare/v0.9.0...v1.0.2
+
 ## v0.9.0 - 2026-06-17
 
 ## What's Changed
+
 * chore(deps-dev): bump driftingly/rector-laravel from 2.3.0 to 2.4.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/126
 * chore(deps): bump symfony/polyfill-intl-idn from 1.37.0 to 1.38.1 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/127
 * chore(deps): bump symfony/yaml from 8.0.12 to 8.1.0 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/128
@@ -13,7 +101,6 @@ All notable changes to `clonio-cli` will be documented in this file.
 * chore(deps-dev): bump laravel/pao from 1.0.6 to 1.1.1 by @dependabot[bot] in https://github.com/clonio-dev/clonio-cli/pull/134
 * feat: Add PRD for dump connection type (issue #124) by @rokde in https://github.com/clonio-dev/clonio-cli/pull/136
 * Support dump by @rokde in https://github.com/clonio-dev/clonio-cli/pull/137
-
 
 **Full Changelog**: https://github.com/clonio-dev/clonio-cli/compare/v0.8.0...v0.9.0
 

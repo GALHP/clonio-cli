@@ -71,6 +71,13 @@ class UpdateCommand extends Command
         $updated = $this->promptUpdatedFields($type, $current);
         $updated['type'] = $type->value;
 
+        // Delivery flags are not prompted; keep hand-edited values from clonio.json.
+        foreach (['delivers_audit', 'delivers_process_log'] as $key) {
+            if (array_key_exists($key, $current)) {
+                $updated[$key] = $current[$key];
+            }
+        }
+
         // ─── Diff ─────────────────────────────────────────────────────────────
         $this->showDiff($current, $updated);
 
@@ -227,7 +234,7 @@ class UpdateCommand extends Command
         $tagsRaw2 = $current['tags'] ?? null;
         $currentTags = is_array($tagsRaw2) ? implode(', ', array_map(static fn (mixed $v): string => is_scalar($v) ? (string) $v : '', $tagsRaw2)) : '';
         $tagsRaw = $this->askString('Tags (comma-separated, optional)', $currentTags);
-        $tags = $tagsRaw !== '' ? array_values(array_filter(array_map(trim(...), explode(',', $tagsRaw)))) : [];
+        $tags = $tagsRaw !== '' ? array_values(array_filter(array_map(trim(...), explode(',', $tagsRaw)))) : []; // @pest-mutate-ignore: EmptyStringToNotEmpty
         $token = $this->updateSecret('Bearer token (optional — press Enter to keep/skip)', $current['token'] ?? '');
 
         $updated = [

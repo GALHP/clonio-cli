@@ -38,7 +38,7 @@ The file name has no functional effect. The convention `<connection-name>.clonin
 
 ## Options
 
-All fields in `options` must be present. `cloning:dump` writes all of them automatically.
+`cloning:dump` writes all of these fields automatically. `drop_extra_columns`, `recreate_tables` and `remap_keys` are optional and fall back to their defaults when omitted.
 
 ```yaml
 options:
@@ -46,7 +46,9 @@ options:
   enforce_column_types: false
   drop_unknown_tables: false
   drop_extra_columns: false
+  recreate_tables: false
   disable_foreign_key_checks: true
+  remap_keys: true
   faker_locale: en_US
 ```
 
@@ -56,12 +58,14 @@ options:
 | `enforce_column_types` | boolean | `false` | Add columns to existing target tables that are present in the source but missing from the target. |
 | `drop_unknown_tables` | boolean | `false` | Drop tables from the target that do not exist in the source. |
 | `drop_extra_columns` | boolean | `false` | Drop columns from existing target tables that exist in the target but not in the source. ⚠ Irreversible — see note below. |
+| `recreate_tables` | boolean | `false` | Drop every selected table that already exists on the target and re-create it from the source schema before data is transferred. Use this when the target schema has drifted (e.g. a column is too narrow). ⚠ Irreversible — see note below. |
 | `disable_foreign_key_checks` | boolean | `true` | Disable foreign-key constraint checks on the target during data transfer. Recommended when truncating or inserting out of dependency order. |
+| `remap_keys` | boolean | `true` | Generate key mappings and rewrite primary/foreign key values when remapping is configured (inline `strategy: remapping` columns or a `key_remapping:` section). Set to `false` to skip that (often expensive) step without removing the remapping definition — override per run with `cloning:run --remap-keys` / `--no-remap-keys`. |
 | `faker_locale` | string | `en_US` | [FakerPHP locale](https://fakerphp.github.io/localization/) applied to all `fake` column strategies. Examples: `de_DE`, `fr_FR`, `ja_JP`. |
 
 ### Schema synchronization
 
-The three schema-control options together determine how closely the target schema is kept in sync with the source before data is transferred:
+The schema-control options together determine how closely the target schema is kept in sync with the source before data is transferred:
 
 | Option | Effect during Phase 4 (Schema Replication) |
 |--------|---------------------------------------------|
@@ -69,10 +73,15 @@ The three schema-control options together determine how closely the target schem
 | `enforce_column_types: true` | Adds missing columns to existing target tables |
 | `drop_extra_columns: true` | Drops columns from target tables that are absent in source |
 | `drop_unknown_tables: true` | Drops tables from target that are absent in source |
+| `recreate_tables: true` | Drops selected tables that exist on the target and re-creates them from the source schema |
 
 > **⚠ Caution — `drop_extra_columns: true`**
 >
 > Dropping columns is irreversible and destroys any data stored in those columns on the target. Enable this only on ephemeral environments (e.g. a fresh CI database) or when you have confirmed those columns are safe to remove.
+
+> **⚠ Caution — `recreate_tables: true`**
+>
+> Every selected table is dropped on the target, including indexes, triggers and any target-only columns, and re-created from the source schema. Foreign keys from source tables are not re-created. On PostgreSQL the drop uses `CASCADE`, and on SQL Server referencing foreign keys are removed first, so foreign-key constraints on *other* target tables that point at a recreated table are removed too. Tables not selected for transfer stay untouched. The option has no effect with `cloning:run --skip-schema`. For `connection:dump` targets, the dump contains `DROP TABLE IF EXISTS` before each `CREATE TABLE`.
 
 ---
 
@@ -105,7 +114,7 @@ Controls which rows are transferred and whether the target table is cleared firs
 
 | Field | Required | Values | Description |
 |-------|:--------:|--------|-------------|
-| `strategy` | yes | `full` \| `first` \| `last` | Row selection strategy. |
+| `strategy` | yes | `full` \| `first` \| `last` \| `schema` \| `skip` | Row selection strategy. |
 | `limit` | when `first`/`last` | integer ≥ 1 | Number of rows to transfer. |
 | `sort_by` | no | column name | Column to order by for `first`/`last`. Defaults to the primary key. |
 | `clear` | no | `false` \| `truncate` \| `delete` | Whether to empty the target table before inserting. Default: `false`. |
@@ -117,6 +126,20 @@ Controls which rows are transferred and whether the target table is cleared firs
 | `full` | Copy all rows from the source table. |
 | `first` | Copy the first `limit` rows (ordered by `sort_by` ascending). |
 | `last` | Copy the last `limit` rows (ordered by `sort_by` descending). |
+| `schema` | Create the table on the target (schema sync applies as usual) but copy no rows. `clear` is still honoured. |
+| `skip` | Leave the table out completely: no schema sync, no rows. Tables with a foreign key to a skipped table are skipped too. |
+
+Use `schema` for tables whose structure the application needs but whose rows are transient or sensitive: cache, sessions, queues, password reset and API tokens, debug logs. `cloning:dump` suggests it for known framework tables (see [cloning:dump](commands/cloning-dump.md#framework-tables)).
+
+```yaml
+tables:
+  sessions:
+    rows:
+      strategy: schema
+      clear: delete   # optional: empty existing target rows
+```
+
+Unlike `skip`, `schema` does not cascade: tables that reference a schema-only table are still copied. Their foreign key values then point to rows that do not exist on the target. `cloning:run` adds a note to the table result, and inserts fail when foreign key checks are enabled (`disable_foreign_key_checks: false`). `first`/`last` with `limit: 0` is rejected; use `schema` instead.
 
 #### `clear` values
 
@@ -242,6 +265,46 @@ notes:
 ```
 
 No additional fields. Quote `"null"` to avoid YAML interpreting it as a null scalar.
+
+---
+
+### `exclude`
+
+Leave the column out of the transfer entirely. Clonio does not read it from the source and does not write it to the target. The target column gets its default value, or `NULL`.
+
+```yaml
+internal_note:
+  strategy: exclude
+```
+
+No additional fields. Use it for columns whose data must never leave the source, or for columns the target computes itself (for example a generated column Clonio does not detect).
+
+The target column must be nullable or have a default. Otherwise the insert fails. Clonio checks this before the transfer and prints a note when an excluded column is `NOT NULL` without a default on the target.
+
+---
+
+### Generated columns
+
+Generated (computed) columns are detected automatically. You don't need to configure them.
+
+| DBMS | Detected as generated |
+|---|---|
+| MySQL / MariaDB | `VIRTUAL`, `STORED` or `PERSISTENT` generated columns |
+| PostgreSQL | `GENERATED ALWAYS AS (...) STORED` |
+| SQLite | `GENERATED ALWAYS AS (...)`, virtual or stored |
+| SQL Server | Computed columns (`AS ...`, with or without `PERSISTED`) |
+
+A column is left out of the transfer when it is generated on the source **or** on the target. Source values of generated columns are never copied, because they may be derived from personal data (for example `UPPER(name)`). When the target column is generated, the target database computes it from the already anonymized values.
+
+**Clonio does not recreate the generation expression.** The expression only survives when Clonio copies the native table definition: MySQL/MariaDB source to a target of the same type, when the table is created. In every other case the column is created as a plain, nullable column and stays empty:
+
+- Cross-DBMS transfers (e.g. MySQL → PostgreSQL)
+- Columns added later with `enforce_column_types`
+- SQL dumps (`--target` of type `dump`)
+
+To keep generated columns on the target, create them there yourself (for example with your migrations) and run with `--skip-schema`, or add the expression after the run.
+
+Each case is reported as a note per table: on the console, in the process log (`table_column_note`), and in the **Notes** section of the audit log.
 
 ---
 

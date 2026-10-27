@@ -24,9 +24,9 @@ class CloningYamlValidator
         'ean13', 'ean8', 'isbn10', 'isbn13',
     ];
 
-    private const array VALID_ROW_STRATEGIES = ['full', 'first', 'last', 'skip'];
+    private const array VALID_ROW_STRATEGIES = ['full', 'first', 'last', 'schema', 'skip'];
 
-    private const array VALID_COLUMN_STRATEGIES = ['keep', 'fake', 'hash', 'mask', 'null', 'static', 'template', 'remapping'];
+    private const array VALID_COLUMN_STRATEGIES = ['keep', 'fake', 'hash', 'mask', 'null', 'static', 'template', 'remapping', 'exclude'];
 
     private const array VALID_HASH_ALGORITHMS = ['sha256', 'sha512', 'md5', 'sha1'];
 
@@ -126,6 +126,16 @@ class CloningYamlValidator
             $errors[] = "Field 'options.drop_extra_columns' must be a boolean";
         }
 
+        // recreate_tables is optional (defaults to false); validate type only when present
+        if (array_key_exists('recreate_tables', $options) && ! is_bool($options['recreate_tables'])) {
+            $errors[] = "Field 'options.recreate_tables' must be a boolean";
+        }
+
+        // remap_keys is optional (defaults to true); validate type only when present
+        if (array_key_exists('remap_keys', $options) && ! is_bool($options['remap_keys'])) {
+            $errors[] = "Field 'options.remap_keys' must be a boolean";
+        }
+
         if (! array_key_exists('faker_locale', $options) || ! is_string($options['faker_locale'])) {
             $errors[] = "Field 'options.faker_locale' must be a string";
         }
@@ -201,7 +211,9 @@ class CloningYamlValidator
         if ($strategy === 'first' || $strategy === 'last') {
             $limit = $rows['limit'] ?? null;
 
-            if (! is_int($limit) || $limit < 1) {
+            if ($limit === 0) {
+                $errors[] = sprintf("%s: rows.limit must be an integer >= 1 when strategy is '%s'. To copy only the table structure, use strategy 'schema'", $prefix, $strategy);
+            } elseif (! is_int($limit) || $limit < 1) { // @pest-mutate-ignore: DecrementInteger
                 $errors[] = sprintf("%s: rows.limit must be an integer >= 1 when strategy is '%s'", $prefix, $strategy);
             }
         }
@@ -239,6 +251,13 @@ class CloningYamlValidator
             $typedColumnConfig = $columnConfig;
 
             $strategy = $typedColumnConfig['strategy'] ?? null;
+
+            // Unquoted `strategy: null` is the YAML null literal, not the 'null' strategy.
+            if ($strategy === null && array_key_exists('strategy', $typedColumnConfig)) {
+                $errors[] = sprintf('%s: strategy is the YAML null literal — quote it as strategy: "null" to set the column to NULL', $prefix);
+
+                continue;
+            }
 
             if (! is_string($strategy) || ! in_array($strategy, self::VALID_COLUMN_STRATEGIES, true)) {
                 $errors[] = sprintf('%s: strategy must be one of: %s', $prefix, implode(', ', self::VALID_COLUMN_STRATEGIES));
@@ -427,7 +446,7 @@ class CloningYamlValidator
                     break;
                 }
 
-                if (preg_match_all('/\{([a-zA-Z][a-zA-Z0-9]*)\}/', $template, $matches) > 0) {
+                if (preg_match_all('/\{([a-zA-Z][a-zA-Z0-9]*)\}/', $template, $matches) > 0) { // @pest-mutate-ignore: GreaterToGreaterOrEqual,DecrementInteger
                     foreach ($matches[1] as $method) {
                         if (! in_array($method, self::KNOWN_FAKER_METHODS, true)) {
                             $errors[] = sprintf("%s: template references unknown faker method '%s'", $prefix, $method);

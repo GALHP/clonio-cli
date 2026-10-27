@@ -9,8 +9,13 @@ on:
 jobs:
   # ─── MySQL · MariaDB · PostgreSQL · SQLite ────────────────────────────────
   connection-test:
-    name: connection:add + connection:test
+    name: connection:add + connection:test${{ matrix.php != '8.5' && format(' (PHP {0}, experimental)', matrix.php) || '' }}
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.php != '8.5' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.5", "8.6"]
 
     services:
       mysql:
@@ -54,21 +59,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
-          php-version: "8.5"
+          php-version: ${{ matrix.php }}
           tools: composer:v2
           extensions: pdo_mysql, pdo_pgsql, pdo_sqlite
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Composer dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
-          path: ~/.composer/cache
+          path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader ${{ matrix.php != '8.5' && '--ignore-platform-req=php+' || '' }}
 
       - name: Generate APP_KEY
         run: echo "APP_KEY=base64:$(php -r 'echo base64_encode(random_bytes(32));')" >> "$GITHUB_ENV"
@@ -106,9 +115,13 @@ jobs:
 
   # ─── SQL Server (optional — large image, non-blocking) ───────────────────
   connection-test-mssql:
-    name: connection:test (SQL Server)
+    name: connection:test (SQL Server)${{ matrix.php != '8.5' && format(' (PHP {0}, experimental)', matrix.php) || '' }}
     runs-on: ubuntu-latest
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.5", "8.6"]
 
     services:
       mssql:
@@ -137,21 +150,25 @@ jobs:
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
 
       - name: Setup PHP with sqlsrv extension
-        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
-          php-version: "8.5"
+          php-version: ${{ matrix.php }}
           tools: composer:v2
           extensions: pdo_sqlite, sqlsrv, pdo_sqlsrv
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Composer dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
-          path: ~/.composer/cache
+          path: ${{ steps.composer-cache.outputs.dir }}
           key: ${{ runner.os }}-composer-mssql-${{ hashFiles('composer.lock') }}
           restore-keys: ${{ runner.os }}-composer-mssql-
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader ${{ matrix.php != '8.5' && '--ignore-platform-req=php+' || '' }}
 
       - name: Generate APP_KEY
         run: echo "APP_KEY=base64:$(php -r 'echo base64_encode(random_bytes(32));')" >> "$GITHUB_ENV"

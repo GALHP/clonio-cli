@@ -26,7 +26,9 @@ clonio cloning:run <file> [options]
 | `--skip-tables=<list>` | Comma-separated list of table names to exclude from this run |
 | `--only-tables=<list>` | Comma-separated list of table names to include; all others are skipped |
 | `--audit-channel=<list>` | Comma-separated list of channel names to use for this run (overrides `audit.default` in `clonio.json`) |
-| `--skip-remapping-keys` | Skip key mapping generation and FK rewriting |
+| `--remap-keys` | Override: set `remap_keys: true` for this run (re-enables key remapping disabled in the YAML) |
+| `--no-remap-keys` | Override: set `remap_keys: false` for this run — skip key mapping generation and FK rewriting. Persist it in the YAML via [`options.remap_keys`](../cloning-yaml.md#options). |
+| `--skip-remapping-keys` | Alias of `--no-remap-keys` |
 | `--no-memory-limit` | Remove PHP's memory limit before generating key mappings. Useful for very large databases when `--file-based` is not viable. |
 | `--file-based` | Store key mappings in AES-256-CBC encrypted temporary files instead of RAM. Keeps memory usage bounded to the size of the largest single table's mapping. |
 | `--enforce-column-types` | Override: set `enforce_column_types: true` for this run |
@@ -35,6 +37,8 @@ clonio cloning:run <file> [options]
 | `--no-drop-unknown-tables` | Override: set `drop_unknown_tables: false` for this run |
 | `--drop-extra-columns` | Override: set `drop_extra_columns: true` for this run |
 | `--no-drop-extra-columns` | Override: set `drop_extra_columns: false` for this run |
+| `--recreate-tables` | Override: set `recreate_tables: true` for this run |
+| `--no-recreate-tables` | Override: set `recreate_tables: false` for this run |
 | `--disable-fk-checks` | Override: set `disable_foreign_key_checks: true` for this run |
 | `--no-disable-fk-checks` | Override: set `disable_foreign_key_checks: false` for this run |
 | `--break-on-failure` | Abort the run immediately on the first table failure (schema or data) |
@@ -91,8 +95,9 @@ clonio cloning:run production-db.cloning.yaml --target staging --dry-run
   orders                   48 201       full        shipping_address
   audit_logs              NOT FOUND     —           —
   product_catalog             923       full        (none)
+  sessions                      0       schema      —
   ─────────────────────────────────────────────────────────────────
-  Total                    61 464 rows across 3 tables (1 not found, will be skipped)
+  Total                    61 464 rows across 4 tables (1 not found, will be skipped)
 
   No data will be transferred. Run without --dry-run to execute.
 ```
@@ -147,14 +152,16 @@ The DDL/DML respect `options.drop_unknown_tables`, `options.chunk_size`, and `op
 
 ## Schema Synchronization
 
-Before transferring data, Clonio synchronizes the target schema to match the source. Four options in the `options:` block of the YAML file control this behaviour. These values are set interactively by `cloning:dump` and can be overridden at run time via CLI flags.
+Before transferring data, Clonio synchronizes the target schema to match the source. Six options in the `options:` block of the YAML file control this behaviour and the data transfer. These values are set interactively by `cloning:dump` and can be overridden at run time via CLI flags.
 
 | YAML option | Default | CLI override (on / off) | Effect |
 |-------------|---------|------------------------|--------|
 | `enforce_column_types` | `false` | `--enforce-column-types` / `--no-enforce-column-types` | Add columns to existing target tables that are present in the source but missing from the target |
 | `drop_unknown_tables` | `false` | `--drop-unknown-tables` / `--no-drop-unknown-tables` | Drop tables from the target that do not exist in the source |
 | `drop_extra_columns` | `false` | `--drop-extra-columns` / `--no-drop-extra-columns` | Drop columns from existing target tables that are absent from the source |
+| `recreate_tables` | `false` | `--recreate-tables` / `--no-recreate-tables` | Drop selected tables that already exist on the target and re-create them from the source schema |
 | `disable_foreign_key_checks` | `true` | `--disable-fk-checks` / `--no-disable-fk-checks` | Disable FK constraint checks during data transfer |
+| `remap_keys` | `true` | `--remap-keys` / `--no-remap-keys` | Generate key mappings and rewrite PK/FK values when remapping is configured |
 
 ```yaml
 options:
@@ -180,6 +187,33 @@ The following options control what happens to columns and tables that diverge fr
 | Exists | Exists, missing columns | Columns added when `enforce_column_types: true` |
 | Exists | Exists, extra columns | Columns dropped when `drop_extra_columns: true` |
 | Missing | Exists | Table dropped when `drop_unknown_tables: true` |
+| Exists | Exists (any shape) | Table dropped and re-created from source when `recreate_tables: true` |
+
+### Generated columns
+
+Generated (computed) columns are never copied. Clonio leaves a column out of the transfer when it is generated on the source or on the target, or when it uses the `exclude` strategy.
+
+Clonio does not recreate generation expressions. Only a MySQL/MariaDB source copied to a target of the same type keeps them, through the native table definition. Cross-DBMS transfers, columns added later and SQL dumps get a plain, nullable column that stays empty.
+
+Each affected table gets a note, for example:
+
+```
+Note: bookings: Generated columns not copied and left empty: day. The generation expression was not replicated to the target.
+```
+
+The notes appear on the console, in the process log and in the **Notes** section of the audit log. See [Generated columns](../cloning-yaml.md#generated-columns) for details.
+
+### Schema-only tables
+
+Tables with `rows.strategy: schema` are created and synchronized like any other table, but no rows are copied. `rows.clear` still runs, so `clear: delete` empties an existing target table. The dry-run shows them with 0 estimated rows.
+
+When a copied table has a foreign key to a schema-only table, its foreign key values point to rows that do not exist on the target. The table result gets a note:
+
+```
+Note: members: References tables copied without data ('schema' strategy): teams. Foreign key values may point to missing rows, or inserts fail when foreign key checks are enabled.
+```
+
+Use `skip` instead when the referencing tables should be left out too. See [Row strategies](../cloning-yaml.md#row-strategies).
 
 ### Overriding options at run time
 
@@ -191,6 +225,9 @@ clonio cloning:run prod.cloning.yaml --target staging --enforce-column-types
 
 # Tear down stale tables on a throwaway CI database
 clonio cloning:run prod.cloning.yaml --target ci-db --drop-unknown-tables --drop-extra-columns
+
+# Rebuild drifted target tables from the source schema (e.g. a column that is too narrow)
+clonio cloning:run prod.cloning.yaml --target staging --recreate-tables
 
 # Disable a destructive option set in the YAML for this run only
 clonio cloning:run prod.cloning.yaml --target staging --no-drop-unknown-tables
@@ -208,6 +245,17 @@ Dropping columns is irreversible and will destroy any data stored in those colum
 
 - The target environment is ephemeral (e.g. a fresh CI database) or regularly rebuilt, **or**
 - You have confirmed that the extra columns on the target are safe to remove.
+
+### Caution: `recreate_tables`
+
+`recreate_tables: true` drops every selected table that already exists on the target and re-creates it from the source schema before the data transfer. Use it when the target schema has drifted from the source (for example, a `varchar` column on the target is shorter than on the source, which makes inserts fail with "Data too long").
+
+- All target-only structures on those tables are lost: indexes, triggers and extra columns.
+- Foreign keys from the source are not re-created on the target.
+- On **PostgreSQL** the table is dropped with `CASCADE`, and on **SQL Server** foreign keys that reference the table are dropped first. Foreign-key constraints on *other* target tables that point at a recreated table are therefore removed. On MySQL/MariaDB and SQLite, foreign-key checks are disabled for the schema session so the drop succeeds and those constraints stay.
+- Only tables selected for transfer are recreated. Tables in `skip:` or not listed under `tables:` stay untouched.
+- It has no effect with `--skip-schema`, because Phase 4 does not run.
+- If a drop fails (e.g. missing privileges), the table is reported as a schema failure and skipped.
 
 ---
 
@@ -295,13 +343,22 @@ Each `foreign_keys` entry:
 | `column` | string | Name of the FK column |
 | `self_referential` | bool | `true` when the FK points to the same table (default: `false`) |
 
-### Skipping remapping for a single run
+### Disabling remapping
+
+Key remapping can be turned off without removing the remapping definition — either for a single run or persistently in the YAML:
 
 ```bash
-clonio cloning:run production-db.cloning.yaml --target staging --skip-remapping-keys
+clonio cloning:run production-db.cloning.yaml --target staging --no-remap-keys
 ```
 
-Bypasses all key mapping generation and PK/FK rewriting even when the YAML has `strategy: remapping` columns defined.
+```yaml
+options:
+  remap_keys: false
+```
+
+Both bypass all key mapping generation and PK/FK rewriting even when the YAML has `strategy: remapping` columns defined, so primary and foreign key values are copied from the source unchanged. Outside `--ci`, the run prints a notice when this happens. `--skip-remapping-keys` is kept as an alias of `--no-remap-keys`.
+
+When the YAML sets `remap_keys: false`, `--remap-keys` re-enables remapping for a single run. If both `--remap-keys` and `--no-remap-keys` are passed, `--no-remap-keys` wins.
 
 ### Memory management for large databases
 
@@ -312,7 +369,7 @@ By default, all PK mappings are held in RAM simultaneously (one entry per row pe
 | `--no-memory-limit` | Removes PHP's `memory_limit` constraint before generating mappings. Useful when the dataset fits on the server but exceeds the configured PHP limit. |
 | `--file-based` | Writes each table's mappings to an AES-256-CBC encrypted temporary file instead of RAM. Only one table's mappings are loaded at a time, keeping peak memory usage bounded to the largest single table. Files are deleted automatically on completion or crash. |
 
-Both flags can be used together if needed. When `--skip-remapping-keys` is set, both flags are silently ignored.
+Both flags can be used together if needed. When remapping is disabled (`--no-remap-keys` or `remap_keys: false`), both flags are silently ignored.
 
 ```bash
 # Remove memory cap (dataset fits in RAM, just over the PHP limit)
@@ -375,14 +432,15 @@ Only runs when `--dry-run` is set. Fetches both the source and target schemas, c
 
 ### Phase 4 — Schema Replication
 
-Synchronizes the target schema with the source. Controlled by four options in the YAML `options` block (see [Schema Synchronization](#schema-synchronization)):
+Synchronizes the target schema with the source. Controlled by five options in the YAML `options` block (see [Schema Synchronization](#schema-synchronization)):
 
 - **Always** creates tables that exist in the source but not in the target.
 - `enforce_column_types: true` — adds missing columns to existing target tables.
 - `drop_extra_columns: true` — drops columns from existing target tables that are absent in the source.
 - `drop_unknown_tables: true` — drops tables from the target that are not present in the source.
+- `recreate_tables: true` — drops selected tables that already exist on the target and re-creates them from the source schema.
 
-Each option can be overridden for a single run via CLI flags (`--enforce-column-types`, `--drop-unknown-tables`, `--drop-extra-columns`, `--disable-fk-checks` and their `--no-*` counterparts) without modifying the YAML file.
+Each option can be overridden for a single run via CLI flags (`--enforce-column-types`, `--drop-unknown-tables`, `--drop-extra-columns`, `--recreate-tables`, `--disable-fk-checks`, `--remap-keys` and their `--no-*` counterparts) without modifying the YAML file.
 
 Skipped entirely when `--skip-schema` is set.
 
@@ -396,8 +454,9 @@ For each table (in resolved order):
 
 1. If `options.disable_foreign_key_checks` is `true`, foreign-key constraints are disabled on the target connection.
 2. If `rows.clear` is `truncate` or `delete`, the target table is emptied before any rows are inserted (see [Clearing Tables](#clearing-tables)).
-3. Rows are fetched from the source in chunks and the configured column transformations are applied before inserting into the target.
-4. On unique or FK constraint violations, falls back to row-by-row insert and records skipped rows.
+3. Tables with `rows.strategy: schema` stop here: no rows are copied.
+4. Rows are fetched from the source in chunks and the configured column transformations are applied before inserting into the target.
+5. On unique or FK constraint violations, falls back to row-by-row insert and records skipped rows.
 
 #### Clearing Tables
 

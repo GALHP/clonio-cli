@@ -17,6 +17,7 @@ use App\Data\Schema\DatabaseSchemaData;
 use App\Enums\ExitCode;
 use App\Enums\KeyRemappingStrategy;
 use App\Services\Cloning\CloningYamlWriter;
+use App\Services\Cloning\FrameworkTableCatalog;
 use App\Services\Config\ConfigService;
 use App\Services\Pii\PiiMatcherLoader;
 use App\Services\Schema\SchemaInspector;
@@ -39,7 +40,11 @@ class DumpCommand extends Command
         {--enforce-column-types  : Set enforce_column_types: true in the generated YAML}
         {--drop-unknown-tables   : Set drop_unknown_tables: true in the generated YAML}
         {--drop-extra-columns    : Set drop_extra_columns: true in the generated YAML}
+        {--recreate-tables       : Set recreate_tables: true in the generated YAML}
         {--no-disable-fk-checks  : Set disable_foreign_key_checks: false in the generated YAML}
+        {--no-remap-keys         : Set remap_keys: false in the generated YAML}
+        {--skip-remapping-keys   : Alias of --no-remap-keys}
+        {--no-framework-tables   : Keep known framework tables (cache, sessions, jobs, ...) on the full row strategy}
         {--ci                    : CI mode — suppress non-error output}';
 
     /**
@@ -52,6 +57,7 @@ class DumpCommand extends Command
         SchemaInspector $schemaInspector,
         PiiMatcherLoader $piiMatcherLoader,
         CloningYamlWriter $yamlWriter,
+        FrameworkTableCatalog $frameworkTables,
     ): int {
         // 1. Check config exists
         if (! $config->exists()) {
@@ -60,9 +66,9 @@ class DumpCommand extends Command
             return ExitCode::ConfigError->value;
         }
 
-        $ci = (bool) $this->option('ci');
-        $onlyPii = (bool) $this->option('only-pii');
-        $allColumns = (bool) $this->option('all-columns');
+        $ci = (bool) $this->option('ci'); // @pest-mutate-ignore: RemoveBooleanCast
+        $onlyPii = (bool) $this->option('only-pii'); // @pest-mutate-ignore: RemoveBooleanCast
+        $allColumns = (bool) $this->option('all-columns'); // @pest-mutate-ignore: RemoveBooleanCast
 
         if ($allColumns && $onlyPii) {
             $this->error('--all-columns and --only-pii cannot be used together.');
@@ -92,7 +98,7 @@ class DumpCommand extends Command
 
             $names = array_keys($connections);
             $chosen = $this->choice('Select a connection to inspect', $names, 0);
-            $connectionName = is_string($chosen) ? $chosen : $names[0];
+            $connectionName = is_string($chosen) ? $chosen : $names[0]; // @pest-mutate-ignore: DecrementInteger,IncrementInteger
         }
 
         $connection = $config->getConnection($connectionName);
@@ -194,7 +200,7 @@ class DumpCommand extends Command
                         hashAlgorithm: null,
                         hashSalt: null,
                         staticValue: null,
-                        piiDetected: false,
+                        piiDetected: false, // @pest-mutate-ignore: FalseToTrue
                         piiCategory: null,
                     );
                 }
@@ -213,17 +219,23 @@ class DumpCommand extends Command
             $tableDumps[] = $tableDump;
         }
 
+        // 8b. Suggest the 'schema' row strategy for known framework tables
+        if (! $this->option('no-framework-tables')) {
+            $tableDumps = $this->applyFrameworkTables($tableDumps, $frameworkTables, $ci);
+        }
+
         // 9. Apply --only-pii filter
         if ($onlyPii) {
-            $tableDumps = array_values(array_filter(
+            $tableDumps = array_values(array_filter( // @pest-mutate-ignore: UnwrapArrayValues
                 $tableDumps,
-                static fn (TableDumpData $t): bool => array_any($t->columns, fn (ColumnDumpData $col): bool => $col->strategy !== 'keep')
+                static fn (TableDumpData $t): bool => $t->rowStrategy === 'schema'
+                    || array_any($t->columns, fn (ColumnDumpData $col): bool => $col->strategy !== 'keep')
             ));
 
             // Also filter columns in remaining tables
-            $tableDumps = array_map(
+            $tableDumps = array_map( // @pest-mutate-ignore: UnwrapArrayMap
                 static function (TableDumpData $t): TableDumpData {
-                    $filtered = array_values(array_filter(
+                    $filtered = array_values(array_filter( // @pest-mutate-ignore: UnwrapArrayFilter,UnwrapArrayValues
                         $t->columns,
                         static fn (ColumnDumpData $col): bool => $col->strategy !== 'keep'
                     ));
@@ -241,17 +253,21 @@ class DumpCommand extends Command
         }
 
         // 10. Collect transfer options
-        $enforceColumnTypes = (bool) $this->option('enforce-column-types');
-        $dropUnknownTables = (bool) $this->option('drop-unknown-tables');
-        $dropExtraColumns = (bool) $this->option('drop-extra-columns');
+        $enforceColumnTypes = (bool) $this->option('enforce-column-types'); // @pest-mutate-ignore: RemoveBooleanCast
+        $dropUnknownTables = (bool) $this->option('drop-unknown-tables'); // @pest-mutate-ignore: RemoveBooleanCast
+        $dropExtraColumns = (bool) $this->option('drop-extra-columns'); // @pest-mutate-ignore: RemoveBooleanCast
+        $recreateTables = (bool) $this->option('recreate-tables'); // @pest-mutate-ignore: RemoveBooleanCast
         $disableForeignKeyChecks = ! $this->option('no-disable-fk-checks');
+        $remapKeys = ! $this->option('no-remap-keys') && ! $this->option('skip-remapping-keys');
 
         if (! $ci) {
             $this->line('  Transfer options:');
             $enforceColumnTypes = $this->confirm('    Enforce column types on target?', $enforceColumnTypes);
             $dropUnknownTables = $this->confirm('    Drop unknown tables on target?', $dropUnknownTables);
             $dropExtraColumns = $this->confirm('    Drop extra columns on target?', $dropExtraColumns);
+            $recreateTables = $this->confirm('    Drop and re-create existing tables on target?', $recreateTables);
             $disableForeignKeyChecks = $this->confirm('    Disable foreign key checks?', $disableForeignKeyChecks);
+            $remapKeys = $this->confirm('    Remap keys?', $remapKeys);
             $this->line('');
         }
 
@@ -269,6 +285,8 @@ class DumpCommand extends Command
             dropUnknownTables: $dropUnknownTables,
             dropExtraColumns: $dropExtraColumns,
             disableForeignKeyChecks: $disableForeignKeyChecks,
+            remapKeys: $remapKeys,
+            recreateTables: $recreateTables,
         );
 
         // 12. Write YAML
@@ -300,6 +318,53 @@ class DumpCommand extends Command
         return ExitCode::Success->value;
     }
 
+    /**
+     * Switch known framework tables (cache, sessions, queues, tokens, logs) to
+     * the 'schema' row strategy. Interactive runs ask first; CI runs apply it.
+     *
+     * @param  list<TableDumpData>  $tableDumps
+     * @return list<TableDumpData>
+     */
+    private function applyFrameworkTables(array $tableDumps, FrameworkTableCatalog $catalog, bool $ci): array
+    {
+        /** @var array<string, string> $matches */
+        $matches = [];
+
+        foreach ($tableDumps as $tableDump) {
+            $label = $catalog->match($tableDump->name);
+
+            if ($label !== null) {
+                $matches[$tableDump->name] = $label;
+            }
+        }
+
+        if ($matches === []) {
+            return $tableDumps;
+        }
+
+        if (! $ci) {
+            $this->line('  Known framework tables (cache, sessions, queues, tokens, logs):');
+
+            foreach ($matches as $name => $label) {
+                $this->line(sprintf('    %s <fg=gray>(%s)</>', $name, $label));
+            }
+
+            $apply = $this->confirm('  Copy only the schema of these tables, without rows?', true);
+            $this->line('');
+
+            if (! $apply) {
+                return $tableDumps;
+            }
+        }
+
+        return array_map(
+            static fn (TableDumpData $t): TableDumpData => array_key_exists($t->name, $matches)
+                ? new TableDumpData(name: $t->name, columns: $t->columns, rowStrategy: 'schema', rowLimit: null, sortBy: null)
+                : $t,
+            $tableDumps,
+        );
+    }
+
     private function buildKeyRemapping(DatabaseSchemaData $schema): ?KeyRemappingConfigData
     {
         // Collect tables that have a single integer primary key.
@@ -326,7 +391,7 @@ class DumpCommand extends Command
         }
 
         if ($intPkByTable === []) {
-            return null;
+            return null; // @pest-mutate-ignore: RemoveEarlyReturn
         }
 
         // Build reverse FK index: referencedTable -> list of KeyRemappingForeignKeyData
