@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use App\Data\Cloning\CloningConfigData;
 use App\Data\Cloning\CloningOptionsData;
+use App\Data\Cloning\StatsTableTransferData;
 use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Cloning\TableRowConfigData;
+use App\Data\Cloning\TableRunPhase;
 use App\Data\Cloning\TableRunResultData;
 use App\Data\Cloning\TableRunStatus;
 use App\Data\ConnectionData;
@@ -22,6 +24,9 @@ use App\Services\Cloning\SkippedRow;
 use App\Services\Database\DatabaseConnectionService;
 use App\Services\Schema\SchemaInspector;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Monolog\Handler\AbstractProcessingHandler;
+use Monolog\LogRecord;
 
 /** Target inspector stub: reports an empty target so no generated columns are found there. */
 function fakeTargetInspector(): SchemaInspector
@@ -692,6 +697,141 @@ it('fires onTableStart exactly once before onProgress for transferred tables', f
     ]);
 });
 
+it('fires onStart exactly once with the planned table count before the transfer loop', function (): void {
+    $source = makeOrchestratorConnection('source');
+    $target = makeOrchestratorConnection('target');
+    $schema = makeOrchestratorSchema();
+    $config = makeOrchestratorConfig();
+
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('select')->andReturn([(object) ['id' => 1]], []);
+    DB::shouldReceive('table')->andReturnSelf();
+    DB::shouldReceive('insert')->andReturnTrue();
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $events = [];
+    $orchestrator = makeOrchestrator();
+    $orchestrator->run(
+        $config,
+        $source,
+        $target,
+        $schema,
+        true,
+        [],
+        [],
+        static function (string $tbl, TableRunStatus $status) use (&$events): void {
+            $events[] = ['progress', $tbl];
+        },
+        onStart: static function (int $total) use (&$events): void {
+            $events[] = ['start', $total];
+        },
+    );
+
+    // onStart fires first (before any progress), exactly once, with the number
+    // of tables that will be attempted.
+    expect($events[0])->toBe(['start', 1]);
+    expect(array_values(array_filter($events, static fn (array $e): bool => $e[0] === 'start')))
+        ->toBe([['start', 1]]);
+});
+
+it('announces the one-shot phases via onTableProgress before the row loop', function (): void {
+    $source = makeOrchestratorConnection('source');
+    $target = makeOrchestratorConnection('target');
+    $schema = makeOrchestratorSchema();
+    $config = makeOrchestratorConfig(clear: ClearMode::Truncate, disableFk: true);
+
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn((object) ['c' => 1]);
+    DB::shouldReceive('select')->andReturn([(object) ['id' => 1]], []);
+    DB::shouldReceive('statement')->andReturnTrue();
+    DB::shouldReceive('table')->andReturnSelf();
+    DB::shouldReceive('insert')->andReturnTrue();
+    DB::shouldReceive('purge')->andReturnNull();
+
+    /** @var list<TableRunPhase> $phases */
+    $phases = [];
+    $stats = null;
+    $orchestrator = makeOrchestrator();
+    $orchestrator->run(
+        $config,
+        $source,
+        $target,
+        $schema,
+        true,
+        [],
+        [],
+        static function (): void {},
+        trackRowTotals: true,
+        onTableProgress: static function (string $tbl, StatsTableTransferData $s) use (&$phases, &$stats): void {
+            // Read the phase at emit time (the stats object is mutated in place).
+            $phases[] = $s->status;
+            $stats = $s;
+        },
+    );
+
+    // Each one-shot phase is announced as it starts, then the loop phase once
+    // before the first chunk and again after each chunk.
+    expect($phases)->toBe([
+        TableRunPhase::EstimatingRows,
+        TableRunPhase::DisableFkChecks,
+        TableRunPhase::Clear,
+        TableRunPhase::Loop,
+        TableRunPhase::Loop,
+    ]);
+
+    // Every phase that ran recorded one plausible wall-clock sample.
+    foreach (TableRunPhase::cases() as $phase) {
+        $aggregate = $stats->aggregate($phase);
+        expect($aggregate->count)->toBe(1)
+            ->and($aggregate->sum)->toBeGreaterThanOrEqual(0.0)
+            ->and($aggregate->sum)->toBeLessThan(60.0);
+    }
+});
+
+it('skips the row estimate for schema-only tables', function (): void {
+    $config = new CloningConfigData(
+        version: '1',
+        connectionName: 'source',
+        options: new CloningOptionsData(
+            chunkSize: 1000,
+            enforceColumnTypes: false,
+            dropUnknownTables: false,
+            dropExtraColumns: false,
+            disableForeignKeyChecks: false,
+            fakerLocale: 'en_US',
+        ),
+        tables: [
+            new TableCloningConfigData(
+                tableName: 'users',
+                rows: new TableRowConfigData(strategy: 'schema', limit: null, sortBy: null, clear: ClearMode::None),
+                columns: [],
+            ),
+        ],
+    );
+
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->never();
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $events = 0;
+    makeOrchestrator()->run(
+        $config,
+        makeOrchestratorConnection('source'),
+        makeOrchestratorConnection('target'),
+        makeOrchestratorSchema(),
+        true,
+        [],
+        [],
+        static function (): void {},
+        trackRowTotals: true,
+        onTableProgress: static function () use (&$events): void {
+            $events++;
+        },
+    );
+
+    expect($events)->toBe(0);
+});
+
 it('does not fire onTableStart for tables skipped by --skip flag', function (): void {
     $source = makeOrchestratorConnection('source');
     $target = makeOrchestratorConnection('target');
@@ -911,6 +1051,396 @@ it('preserves captured skip rows when a later chunk fetch throws', function (): 
     expect($progressArgs['tbl'])->toBe('users');
     expect($progressArgs['skippedRows'])->toHaveCount(1);
     expect($progressArgs['skippedRows'][0]->sqlError)->toBe('SQLSTATE[23000]: row failure on chunk 1');
+});
+
+it('reports per-table timings and throughput through onTableProgress', function (): void {
+    $source = makeOrchestratorConnection('source');
+    $target = makeOrchestratorConnection('target');
+    $schema = makeOrchestratorSchema();
+    $config = new CloningConfigData(
+        version: '1',
+        connectionName: 'source',
+        options: new CloningOptionsData(
+            chunkSize: 2,
+            enforceColumnTypes: false,
+            dropUnknownTables: false,
+            dropExtraColumns: false,
+            disableForeignKeyChecks: false,
+            fakerLocale: 'en_US',
+        ),
+        tables: [
+            new TableCloningConfigData(
+                tableName: 'users',
+                rows: new TableRowConfigData(strategy: 'full', limit: null, sortBy: null, clear: ClearMode::None),
+                columns: [],
+            ),
+        ],
+    );
+
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('select')->andReturn(
+        [(object) ['id' => 1], (object) ['id' => 2]],
+        [(object) ['id' => 3]],
+    );
+    DB::shouldReceive('selectOne')->andReturn((object) ['c' => 3]);
+    DB::shouldReceive('table')->andReturnSelf();
+    DB::shouldReceive('insert')->andReturnTrue();
+    DB::shouldReceive('purge')->andReturnNull();
+
+    /** @var list<StatsTableTransferData> $events */
+    $events = [];
+    $rowsAtEvent = [];
+    $terminal = [];
+    $orchestrator = makeOrchestrator();
+    $orchestrator->run(
+        $config,
+        $source,
+        $target,
+        $schema,
+        true,
+        [],
+        [],
+        static function (string $tbl, TableRunStatus $status) use (&$terminal): void {
+            $terminal[] = $status;
+        },
+        trackRowTotals: true,
+        onTableProgress: static function (string $tbl, StatsTableTransferData $stats) use (&$events, &$rowsAtEvent): void {
+            $events[] = $stats;
+            $rowsAtEvent[] = $stats->rowsProcessed;
+        },
+    );
+
+    // One event for the row estimate, one as the loop starts and one per chunk
+    // (2 chunks), then the terminal Transferred event on onProgress.
+    expect($events)->toHaveCount(4);
+    expect($terminal)->toBe([TableRunStatus::Transferred]);
+
+    // The same live object travels through every event of the table.
+    $timings = $events[0];
+    expect($events[3])->toBe($timings);
+    expect($timings->totalRows)->toBe(3);
+    expect($timings->rowsDone)->toBe(3);
+    expect($timings->rowsSkipped)->toBe(0);
+    expect($timings->rowsRemaining)->toBe(0);
+
+    // Cumulative progress read at emit time: before the first chunk, then per chunk.
+    expect($rowsAtEvent)->toBe([0, 0, 2, 3]);
+
+    $loopAgg = $timings->aggregate(TableRunPhase::Loop);
+    expect($loopAgg->count)->toBe(2);
+    expect($loopAgg->rowsProcessed)->toBe(3);
+    expect($loopAgg->lastRows)->toBe(1);
+
+    $insertAgg = $timings->aggregate(TableRunPhase::Insert);
+    expect($insertAgg->count)->toBe(2);
+    expect($insertAgg->min)->toBeLessThanOrEqual($insertAgg->max);
+    expect($insertAgg->averageSeconds)->toBeGreaterThanOrEqual(0.0);
+
+    expect($insertAgg->pacePerMillion)->not->toBeNull();
+    expect($insertAgg->latestPacePerMillion)->not->toBeNull();
+});
+
+it('returns null throughput when no rows were processed on StatsTableTransferData', function (): void {
+    $timings = new StatsTableTransferData;
+    expect($timings->aggregate(TableRunPhase::Insert)->pacePerMillion)->toBeNull();
+    expect($timings->hasKnownTotal)->toBeFalse();
+});
+
+/**
+ * Transfer one table with row totals tracked and return its live stats.
+ */
+function runTrackingRowTotals(DatabaseConnectionType $sourceType, ?int $limit = null): StatsTableTransferData
+{
+    $config = new CloningConfigData(
+        version: '1',
+        connectionName: 'source',
+        options: new CloningOptionsData(
+            chunkSize: 1000,
+            enforceColumnTypes: false,
+            dropUnknownTables: false,
+            dropExtraColumns: false,
+            disableForeignKeyChecks: false,
+            fakerLocale: 'en_US',
+        ),
+        tables: [
+            new TableCloningConfigData(
+                tableName: 'users',
+                rows: new TableRowConfigData(strategy: 'full', limit: $limit, sortBy: 'id', clear: ClearMode::None),
+                columns: [],
+            ),
+        ],
+    );
+
+    $stats = null;
+    makeOrchestrator()->run(
+        $config,
+        makeOrchestratorConnection('source', $sourceType),
+        makeOrchestratorConnection('target'),
+        makeOrchestratorSchema(),
+        true,
+        [],
+        [],
+        static function (): void {},
+        trackRowTotals: true,
+        onTableProgress: static function (string $tbl, StatsTableTransferData $s) use (&$stats): void {
+            $stats = $s;
+        },
+    );
+
+    expect($stats)->toBeInstanceOf(StatsTableTransferData::class);
+
+    return $stats;
+}
+
+it('sizes the table from catalog statistics on server databases and counts on SQLite', function (DatabaseConnectionType $type, string $sql, array $bindings, bool $estimated): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->once()->with($sql, $bindings)->andReturn((object) ['c' => '42']);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $stats = runTrackingRowTotals($type);
+
+    expect($stats->totalRows)->toBe(42);
+    expect($stats->totalRowsEstimated)->toBe($estimated);
+    expect($stats->aggregate(TableRunPhase::EstimatingRows)->count)->toBe(1);
+})->with([
+    'mysql' => [DatabaseConnectionType::Mysql, 'SELECT TABLE_ROWS AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['users'], true],
+    'mariadb' => [DatabaseConnectionType::MariaDB, 'SELECT TABLE_ROWS AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['users'], true],
+    'pgsql' => [DatabaseConnectionType::PostgreSQL, 'SELECT c.reltuples::bigint AS c FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname = ?', ['users'], true],
+    'sqlsrv' => [DatabaseConnectionType::SqlServer, 'SELECT SUM(p.rows) AS c FROM sys.partitions p WHERE p.object_id = OBJECT_ID(?) AND p.index_id IN (0, 1)', ['users'], true],
+    'sqlite' => [DatabaseConnectionType::Sqlite, 'SELECT COUNT(*) AS c FROM "users"', [], false],
+]);
+
+it('reads the row total from an associative result row', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn(['c' => 7]);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    expect(runTrackingRowTotals(DatabaseConnectionType::Mysql)->totalRows)->toBe(7);
+});
+
+it('caps the row total at the row strategy limit', function (int $estimate, ?int $limit, int $expected): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn((object) ['c' => $estimate]);
+
+    $table = new TableCloningConfigData(
+        tableName: 'users',
+        rows: new TableRowConfigData(strategy: 'first', limit: $limit, sortBy: 'id', clear: ClearMode::None),
+        columns: [],
+    );
+
+    // Called directly: a whole transfer would also run the 'first' chunk query.
+    $estimate = (fn (): array => $this->estimateSourceRows('source_conn', $table, makeOrchestratorConnection('source')))
+        ->call(makeOrchestrator());
+
+    expect($estimate)->toBe([$expected, true]);
+})->with([
+    'below limit' => [50, 100, 50],
+    'at limit' => [100, 100, 100],
+    'above limit' => [5000, 100, 100],
+    'zero limit' => [5000, 0, 0],
+    'no limit' => [5000, null, 5000],
+]);
+
+it('ignores a row limit on the full strategy, which copies every row', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn((object) ['c' => 5000]);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    expect(runTrackingRowTotals(DatabaseConnectionType::Mysql, 100)->totalRows)->toBe(5000);
+});
+
+it('treats a never-analyzed PostgreSQL table (-1) or an unreadable result as an unknown total', function (mixed $result): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andReturn($result);
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    expect(runTrackingRowTotals(DatabaseConnectionType::PostgreSQL)->totalRows)->toBe(0);
+})->with([
+    'never analyzed' => [(object) ['c' => -1]],
+    'no row' => [null],
+    'non-numeric' => [(object) ['c' => 'n/a']],
+    'missing column' => [(object) ['rows' => 5]],
+]);
+
+it('keeps transferring with an unknown total when the row estimate fails', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->andThrow(new RuntimeException('permission denied for pg_class'));
+    DB::shouldReceive('select')->andReturn([]);
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $stats = runTrackingRowTotals(DatabaseConnectionType::PostgreSQL);
+
+    expect($stats->totalRows)->toBe(0);
+    expect($stats->totalRowsEstimated)->toBeFalse();
+
+    $events = array_values(array_filter(
+        app(AuditBuffer::class)->records(),
+        static fn (array $e): bool => $e['event'] === 'source_row_estimate_failed',
+    ));
+    expect($events)->toHaveCount(1);
+    expect($events[0]['table'])->toBe('users');
+    expect($events[0]['error'])->toBe('permission denied for pg_class');
+});
+
+it('keeps the rows already inserted when logging a skipped row throws mid-chunk', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('select')->andReturn([(object) ['id' => 1], (object) ['id' => 2], (object) ['id' => 3]], []);
+    DB::shouldReceive('table')->andReturnSelf();
+    DB::shouldReceive('insert')->andReturnUsing(static function (array $payload): bool {
+        if (! array_key_exists('id', $payload) || $payload['id'] === 2) {
+            throw new RuntimeException('insert failed'); // the bulk insert, then row 2
+        }
+
+        return true;
+    });
+    DB::shouldReceive('purge')->andReturnNull();
+
+    // A log handler that breaks on the first skipped row, e.g. a closed output.
+    $monolog = Log::driver()->getLogger();
+    $monolog->pushHandler(new class extends AbstractProcessingHandler
+    {
+        protected function write(LogRecord $record): void
+        {
+            if ($record->message === 'row_skipped') {
+                throw new RuntimeException('log output closed');
+            }
+        }
+    });
+
+    try {
+        $result = makeOrchestrator()->run(
+            makeOrchestratorConfig(),
+            makeOrchestratorConnection('source'),
+            makeOrchestratorConnection('target'),
+            makeOrchestratorSchema(),
+            true,
+            [],
+            [],
+            static function (): void {},
+        );
+    } finally {
+        $monolog->popHandler();
+    }
+
+    // Row 1 landed and row 2 was skipped before the log call threw.
+    expect($result->tables[0]->status)->toBe(TableRunStatus::Failed)
+        ->and($result->tables[0]->failureReason)->toBe('log output closed')
+        ->and($result->tables[0]->rowsTransferred)->toBe(1)
+        ->and($result->tables[0]->rowsSkipped)->toBe(1);
+});
+
+it('closes both connections when reporting the row estimate throws', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->never();
+    DB::shouldReceive('purge')->once()->with('source_conn');
+    DB::shouldReceive('purge')->once()->with('target_conn');
+
+    $result = makeOrchestrator()->run(
+        makeOrchestratorConfig(),
+        makeOrchestratorConnection('source'),
+        makeOrchestratorConnection('target'),
+        makeOrchestratorSchema(),
+        true,
+        [],
+        [],
+        static function (): void {},
+        trackRowTotals: true,
+        onTableProgress: static function (): void {
+            throw new RuntimeException('display broke');
+        },
+    );
+
+    expect($result->tables[0]->status)->toBe(TableRunStatus::Failed)
+        ->and($result->tables[0]->failureReason)->toBe('display broke');
+});
+
+it('bounds the SQLite count by the row limit of a first or last table', function (string $strategy): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->once()->with('SELECT COUNT(*) AS c FROM (SELECT 1 FROM "users" LIMIT 100)', [])->andReturn((object) ['c' => 100]);
+
+    $table = new TableCloningConfigData(
+        tableName: 'users',
+        rows: new TableRowConfigData(strategy: $strategy, limit: 100, sortBy: 'id', clear: ClearMode::None),
+        columns: [],
+    );
+
+    $estimate = (fn (): array => $this->estimateSourceRows('source_conn', $table, makeOrchestratorConnection('source', DatabaseConnectionType::Sqlite)))
+        ->call(makeOrchestrator());
+
+    expect($estimate)->toBe([100, false]);
+})->with(['first', 'last']);
+
+it('counts skipped rows per chunk in the table stats', function (): void {
+    $config = new CloningConfigData(
+        version: '1',
+        connectionName: 'source',
+        options: new CloningOptionsData(
+            chunkSize: 2,
+            enforceColumnTypes: false,
+            dropUnknownTables: false,
+            dropExtraColumns: false,
+            disableForeignKeyChecks: false,
+            fakerLocale: 'en_US',
+        ),
+        tables: [
+            new TableCloningConfigData(
+                tableName: 'users',
+                rows: new TableRowConfigData(strategy: 'full', limit: null, sortBy: null, clear: ClearMode::None),
+                columns: [],
+            ),
+        ],
+    );
+
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('select')->andReturn([(object) ['id' => 1], (object) ['id' => 2]], [(object) ['id' => 3]], []);
+    DB::shouldReceive('table')->andReturnSelf();
+    DB::shouldReceive('insert')->andReturnUsing(static function (array $payload): bool {
+        // Bulk inserts fail; rows 1 and 3 fail on their own as well.
+        if (! array_key_exists('id', $payload) || $payload['id'] !== 2) {
+            throw new RuntimeException('insert failed');
+        }
+
+        return true;
+    });
+    DB::shouldReceive('purge')->andReturnNull();
+
+    $stats = null;
+    makeOrchestrator()->run(
+        $config,
+        makeOrchestratorConnection('source'),
+        makeOrchestratorConnection('target'),
+        makeOrchestratorSchema(),
+        true,
+        [],
+        [],
+        static function (): void {},
+        onTableProgress: static function (string $tbl, StatsTableTransferData $s) use (&$stats): void {
+            $stats = $s;
+        },
+    );
+
+    expect($stats->rowsDone)->toBe(1)
+        ->and($stats->rowsSkipped)->toBe(2);
+});
+
+it('counts a SQLite table in full when its strategy copies every row', function (): void {
+    DB::shouldReceive('connection')->andReturnSelf();
+    DB::shouldReceive('selectOne')->once()->with('SELECT COUNT(*) AS c FROM "users"', [])->andReturn((object) ['c' => 500]);
+
+    $table = new TableCloningConfigData(
+        tableName: 'users',
+        rows: new TableRowConfigData(strategy: 'full', limit: 100, sortBy: null, clear: ClearMode::None),
+        columns: [],
+    );
+
+    $estimate = (fn (): array => $this->estimateSourceRows('source_conn', $table, makeOrchestratorConnection('source', DatabaseConnectionType::Sqlite)))
+        ->call(makeOrchestrator());
+
+    expect($estimate)->toBe([500, false]);
 });
 
 it('uses keyset (seek) pagination instead of OFFSET when a primary key exists', function (): void {

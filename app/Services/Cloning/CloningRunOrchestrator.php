@@ -9,7 +9,10 @@ use App\Data\Cloning\CloningOptionsData;
 use App\Data\Cloning\ColumnCloningConfigData;
 use App\Data\Cloning\KeyRemappingConfigData;
 use App\Data\Cloning\RunResultData;
+use App\Data\Cloning\StatsLoopData;
+use App\Data\Cloning\StatsTableTransferData;
 use App\Data\Cloning\TableCloningConfigData;
+use App\Data\Cloning\TableRunPhase;
 use App\Data\Cloning\TableRunResultData;
 use App\Data\Cloning\TableRunStatus;
 use App\Data\ConnectionData;
@@ -42,6 +45,9 @@ class CloningRunOrchestrator
      * @param  list<string>  $onlyTables  If non-empty, only these tables are transferred
      * @param  callable(string, TableRunStatus, int, int, list<SkippedRow>): void  $onProgress
      * @param  (callable(string): void)|null  $onTableStart  Optional. Fires once per table that enters `transferTable()`, regardless of whether the transfer ultimately succeeds (`Transferred`) or fails (`Failed`). Does NOT fire for tables resolved as `SkippedByFlag`, `SkippedByCascade`, `NotFound`, or `SkippedBySchemaFailure`.
+     * @param  (callable(int): void)|null  $onStart  Optional. Fires exactly once, before the transfer loop, with the number of tables the loop will iterate. Note: when `$breakOnFailure` aborts early, fewer terminal `onProgress` events fire than this count. Useful for sizing an overall progress bar.
+     * @param  bool  $trackRowTotals  When true, look up the expected row total per table (respecting the row limit) to size per-table progress: a catalog-statistics estimate on server databases, so the production source is never scanned, and `COUNT(*)` on SQLite. Off by default so non-interactive runs don't pay for a lookup nobody consumes.
+     * @param  (callable(string, StatsTableTransferData): void)|null  $onTableProgress  Optional. Fires while a table transfers: when each one-shot phase starts (row total, FK checks, clear) and after every chunk. The same live object is passed for the whole table and holds its final figures once the table's terminal `onProgress` event fires.
      */
     public function run(
         CloningConfigData $config,
@@ -56,6 +62,9 @@ class CloningRunOrchestrator
         bool $breakOnFailure = false,
         ?callable $onTableStart = null,
         ?SqlDumpService $dumpSink = null,
+        ?callable $onStart = null,
+        bool $trackRowTotals = false,
+        ?callable $onTableProgress = null,
     ): RunResultData {
         $start = microtime(true);
         $tableNames = array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $config->tables);
@@ -75,6 +84,12 @@ class CloningRunOrchestrator
         ));
 
         $sortedTables = $this->resolver->sort($sourceSchema, $remaining);
+
+        // Announce the number of tables that will be attempted (each emits a
+        // terminal onProgress event) so callers can size an overall progress bar.
+        if ($onStart !== null) {
+            $onStart(count($sortedTables));
+        }
 
         // Replicate schema if not skipping
         /** @var array<string, string> $schemaFailures */
@@ -252,6 +267,8 @@ class CloningRunOrchestrator
                     $config->keyRemapping,
                     $selectColumns,
                     $keyColumns,
+                    $trackRowTotals,
+                    $onTableProgress,
                 );
 
             $tableDuration = microtime(true) - $tableStart;
@@ -329,6 +346,7 @@ class CloningRunOrchestrator
      * @param  list<string>  $pkColumns
      * @param  list<string>|null  $selectColumns  Explicit source columns to copy; null copies all
      * @param  list<string>  $keyColumns  Columns to seek by (keysetColumns()); empty reads with LIMIT/OFFSET
+     * @param  (callable(string, StatsTableTransferData): void)|null  $onTableProgress
      * @return array{int, int, bool, ?string, list<SkippedRow>}
      */
     private function transferTable(
@@ -338,10 +356,12 @@ class CloningRunOrchestrator
         ConnectionData $target,
         array $pkColumns,
         AnonymizationEngine $engine,
-        ?KeyRemappingService $keyRemapping = null,
-        ?KeyRemappingConfigData $keyRemappingConfig = null,
-        ?array $selectColumns = null,
-        array $keyColumns = [],
+        ?KeyRemappingService $keyRemapping,
+        ?KeyRemappingConfigData $keyRemappingConfig,
+        ?array $selectColumns,
+        array $keyColumns,
+        bool $trackRowTotals,
+        ?callable $onTableProgress,
     ): array {
         $sourceConn = $this->connector->open($source);
         $targetConn = $this->connector->open($target);
@@ -358,30 +378,71 @@ class CloningRunOrchestrator
         /** @var list<mixed>|null $cursor Key values of the last row read; null before the first chunk. */
         $cursor = null;
 
+        $stats = new StatsTableTransferData;
+        $reportProgress = static function () use ($onTableProgress, $tableConfig, $stats): void {
+            if ($onTableProgress !== null) {
+                $onTableProgress($tableConfig->tableName, $stats);
+            }
+        };
+
         try {
+            // Only pay for the row estimate when a consumer actually wants per-table
+            // progress totals and the table copies rows; otherwise totalRows stays 0
+            // (unknown).
+            if ($trackRowTotals && $tableConfig->rows->strategy !== 'schema') {
+                $stats->setStatus(TableRunPhase::EstimatingRows);
+                $reportProgress();
+
+                $t0 = microtime(true);
+                [$expectedRows, $isEstimate] = $this->estimateSourceRows($sourceConn, $tableConfig, $source);
+                $stats->setTotalRows($expectedRows, $isEstimate);
+                $stats->recordEstimatingRows(microtime(true) - $t0);
+            }
+
             if ($options->disableForeignKeyChecks) {
+                $stats->setStatus(TableRunPhase::DisableFkChecks);
+                $reportProgress();
+
+                $t0 = microtime(true);
                 $this->disableFkChecks($targetConn, $target);
+                $stats->recordDisableFk(microtime(true) - $t0);
             }
 
             if ($tableConfig->rows->clear !== ClearMode::None) {
+                $stats->setStatus(TableRunPhase::Clear);
+                $reportProgress();
+
+                $t0 = microtime(true);
                 $this->clearTable($targetConn, $tableConfig->tableName, $tableConfig->rows->clear, $target);
+                $stats->recordClearTable(microtime(true) - $t0);
             }
 
             if ($tableConfig->rows->strategy === 'schema') {
                 return [0, 0, false, null, []];
             }
 
+            $stats->setStatus(TableRunPhase::Loop);
+            $reportProgress();
+
             do {
+                $tOverall = microtime(true);
                 [$sql, $bindings] = $this->buildChunkQuery($tableConfig, $source, $offset, $chunkSize, $keyColumns, $cursor, $selectColumns);
                 /** @var list<object> $chunk */
                 $chunk = DB::connection($sourceConn)->select($sql, $bindings);
+                $selectSeconds = microtime(true) - $tOverall;
 
                 if ($chunk === []) {
                     break; // @pest-mutate-ignore: BreakToContinue
                 }
 
+                $tTransform = microtime(true);
                 $transformed = $this->transformChunk($chunk, $tableConfig, $engine, $keyRemapping, $keyRemappingConfig);
+                $transformSeconds = microtime(true) - $tTransform;
 
+                // Count rows as they land, so a throw mid-chunk still reports them.
+                $rowsBefore = $rows;
+                $skippedBefore = $skipped;
+                $insertStart = microtime(true);
                 // Bulk insert into target
                 try {
                     DB::connection($targetConn)->table($tableConfig->tableName)->insert($transformed);
@@ -417,6 +478,21 @@ class CloningRunOrchestrator
                         }
                     }
                 }
+
+                $insertSeconds = microtime(true) - $insertStart;
+                $overallSeconds = microtime(true) - $tOverall;
+
+                $stats->recordLoop(new StatsLoopData(
+                    chunkRows: count($transformed),
+                    selectSeconds: $selectSeconds,
+                    transformSeconds: $transformSeconds,
+                    insertSeconds: $insertSeconds,
+                    overallSeconds: $overallSeconds,
+                    rowsDone: $rows - $rowsBefore,
+                    rowsSkipped: $skipped - $skippedBefore,
+                ));
+
+                $reportProgress();
 
                 $cursor = $this->keysetCursor($chunk, $keyColumns, $tableConfig->tableName, $cursor);
                 $offset += count($chunk);
@@ -565,6 +641,65 @@ class CloningRunOrchestrator
         }
 
         return $snapshot === [] ? null : $snapshot;
+    }
+
+    /**
+     * Best-effort expected row total of the source table, respecting the row
+     * strategy limit. Server databases answer from catalog statistics, so a
+     * large production table is never scanned; the figure is then an estimate
+     * that can be off in either direction. SQLite keeps no such statistics and
+     * counts. Returns 0 (unknown) on failure so progress stays optional.
+     *
+     * @return array{int, bool} [rows, isEstimate]
+     */
+    private function estimateSourceRows(string $sourceConn, TableCloningConfigData $config, ConnectionData $source): array
+    {
+        [$sql, $bindings, $isEstimate] = match ($source->type) {
+            DatabaseConnectionType::Mysql, DatabaseConnectionType::MariaDB => [
+                'SELECT TABLE_ROWS AS c FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+                [$config->tableName],
+                true,
+            ],
+            DatabaseConnectionType::PostgreSQL => [
+                'SELECT c.reltuples::bigint AS c FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname = ?',
+                [$config->tableName],
+                true,
+            ],
+            DatabaseConnectionType::SqlServer => [
+                'SELECT SUM(p.rows) AS c FROM sys.partitions p WHERE p.object_id = OBJECT_ID(?) AND p.index_id IN (0, 1)',
+                [$config->tableName],
+                true,
+            ],
+            // Bounded by the row limit, so a 'first' / 'last' table is not counted in full.
+            default => [
+                $config->rows->strategy !== 'full' && $config->rows->limit !== null
+                    ? sprintf('SELECT COUNT(*) AS c FROM (SELECT 1 FROM %s LIMIT %d)', $this->quoteTable($config->tableName, $source->type), $config->rows->limit)
+                    : sprintf('SELECT COUNT(*) AS c FROM %s', $this->quoteTable($config->tableName, $source->type)),
+                [],
+                false,
+            ],
+        };
+
+        try {
+            $result = DB::connection($sourceConn)->selectOne($sql, $bindings);
+        } catch (Throwable $throwable) {
+            Log::warning('source_row_estimate_failed', ['table' => $config->tableName, 'error' => $throwable->getMessage()]);
+            $result = null;
+            $isEstimate = false;
+        }
+
+        $row = is_object($result) ? get_object_vars($result) : $result;
+        $value = is_array($row) ? ($row['c'] ?? null) : null;
+        // Unreadable means unknown (0). PostgreSQL reports -1 for a table that was
+        // never analyzed; setTotalRows() clamps that to 0 as well.
+        $count = is_numeric($value) ? (int) $value : 0; // @pest-mutate-ignore: DecrementInteger
+
+        // Mirrors buildChunkQuery(): only 'first' / 'last' honour the row limit.
+        if ($config->rows->strategy !== 'full' && $config->rows->limit !== null) {
+            $count = min($config->rows->limit, $count);
+        }
+
+        return [$count, $isEstimate];
     }
 
     /**
