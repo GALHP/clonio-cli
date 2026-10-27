@@ -59,7 +59,11 @@ class SchemaInspector
 
             /** @var list<stdClass> $columnRows */
             $columnRows = DB::connection($connName)->select(
-                'SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION',
+                "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.COLUMN_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, c.COLUMN_KEY, c.EXTRA,
+                    (SELECT k.ORDINAL_POSITION FROM information_schema.KEY_COLUMN_USAGE k
+                     WHERE k.TABLE_SCHEMA = c.TABLE_SCHEMA AND k.TABLE_NAME = c.TABLE_NAME
+                     AND k.COLUMN_NAME = c.COLUMN_NAME AND k.CONSTRAINT_NAME = 'PRIMARY') AS PK_POSITION
+                FROM information_schema.COLUMNS c WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME = ? ORDER BY c.ORDINAL_POSITION",
                 [$tableName]
             );
 
@@ -93,6 +97,7 @@ class SchemaInspector
                     precision: $mods['precision'],
                     scale: $mods['scale'],
                     generated: $this->isMysqlGenerated($extra),
+                    primaryKeyPosition: $this->intOrNull($col->PK_POSITION ?? null),
                 );
             }
 
@@ -151,7 +156,11 @@ class SchemaInspector
                     (SELECT COUNT(*) FROM information_schema.table_constraints tc
                      JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
                      WHERE tc.table_name = c.table_name AND kcu.column_name = c.column_name
-                     AND tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = current_schema()) > 0 as is_primary
+                     AND tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = current_schema()) > 0 as is_primary,
+                    (SELECT MIN(kcu.ordinal_position) FROM information_schema.table_constraints tc
+                     JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+                     WHERE tc.table_name = c.table_name AND kcu.column_name = c.column_name
+                     AND tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = current_schema()) as pk_position
                 FROM information_schema.columns c
                 WHERE table_schema = current_schema() AND table_name = ?
                 ORDER BY ordinal_position",
@@ -181,6 +190,7 @@ class SchemaInspector
                     precision: $this->intOrNull($col->numeric_precision ?? null),
                     scale: $this->intOrNull($col->numeric_scale ?? null),
                     generated: ($col->is_generated ?? null) === 'ALWAYS',
+                    primaryKeyPosition: $this->intOrNull($col->pk_position ?? null),
                 );
             }
 
@@ -267,7 +277,9 @@ class SchemaInspector
                 $notNull = (bool) $col->notnull; // @pest-mutate-ignore: RemoveBooleanCast
                 $rawDfltValue = $col->dflt_value ?? null;
                 $dfltValue = is_scalar($rawDfltValue) ? (string) $rawDfltValue : null;
-                $pk = (bool) $col->pk;
+                // PRAGMA table_info reports the 1-based position in the primary key, 0 outside it.
+                $pkPosition = is_numeric($col->pk) ? (int) $col->pk : 0; // @pest-mutate-ignore: DecrementInteger
+                $pk = $pkPosition > 0;
 
                 $mods = ColumnTypeParser::parse($colType);
 
@@ -281,6 +293,7 @@ class SchemaInspector
                     precision: $mods['precision'],
                     scale: $mods['scale'],
                     generated: $hidden === 2 || $hidden === 3,
+                    primaryKeyPosition: $pk ? $pkPosition : null,
                 );
             }
 
@@ -355,10 +368,11 @@ class SchemaInspector
                 "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT,
                     c.CHARACTER_MAXIMUM_LENGTH, c.NUMERIC_PRECISION, c.NUMERIC_SCALE,
                     CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END as is_primary,
+                    pk.ORDINAL_POSITION as pk_position,
                     COLUMNPROPERTY(OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME)), c.COLUMN_NAME, 'IsComputed') as is_computed
                 FROM INFORMATION_SCHEMA.COLUMNS c
                 LEFT JOIN (
-                    SELECT ku.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                    SELECT ku.COLUMN_NAME, ku.ORDINAL_POSITION FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
                     JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
                     WHERE tc.TABLE_NAME = ? AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
                 ) pk ON pk.COLUMN_NAME = c.COLUMN_NAME
@@ -393,6 +407,7 @@ class SchemaInspector
                     precision: $this->intOrNull($col->NUMERIC_PRECISION ?? null),
                     scale: $this->intOrNull($col->NUMERIC_SCALE ?? null),
                     generated: $this->intOrNull($col->is_computed ?? null) === 1,
+                    primaryKeyPosition: $this->intOrNull($col->pk_position ?? null),
                 );
             }
 
