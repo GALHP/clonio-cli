@@ -89,16 +89,24 @@ configure a whole family of tables:
   table has it does it fall back to the single table that matches it
   case-insensitively. An ambiguous fallback matches nothing (*not found*).
 - When several entries match the same table, the **last** entry in file order
-  wins (list a broad regex first, then override specific tables below it).
+  wins, including `rows.strategy: skip` (list a broad regex first, then
+  override specific tables below it). The winner replaces the earlier entry
+  completely; column rules it drops (anything but `keep`) are reported as a
+  note on the table result.
 - A literal key naming an absent source table is still reported *not found*; a
-  regex that matches nothing is skipped.
+  regex that matches nothing is skipped with a `table_pattern_unmatched`
+  warning.
+- Literal names in the `skip:` list and in key remapping (tables and foreign
+  keys) resolve the same way as literal keys.
+- Resolved tables keep the order in which the file first mentions them.
 - Regex keys must be single-quoted in YAML; double quotes turn `\d` into an
   invalid escape sequence.
 - Entries of the top-level `skip:` list may be regex as well; each regex must
   compile.
 - Key remapping needs literal table names: a `strategy: remapping` column under
-  a regex key and a regex `key_remapping.tables[].table` fail validation. The
-  `--skip-tables` / `--only-tables` flags remain literal-only.
+  a regex key and a regex table in key remapping (`key_remapping.tables[].table`
+  or any `foreign_keys[].table`) fail validation. The `--skip-tables` /
+  `--only-tables` flags remain literal-only.
 
 ```yaml
 tables:

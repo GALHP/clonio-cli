@@ -138,8 +138,12 @@ tables:
   if there is exactly one such table (on PostgreSQL `Users` and `users` can
   both exist; then a key `USERS` matches neither and is reported as *not
   found*).
-- **The last matching entry in the file wins.** List a broad regex first, then
-  override individual tables with a more specific regex or literal below it:
+- **The last matching entry in the file wins**, including `rows.strategy: skip`.
+  List a broad regex first, then override individual tables with a more
+  specific regex or literal below it. The winning entry replaces the earlier
+  one completely, column rules included; when that drops column rules of an
+  earlier entry (anything but `keep`), the run reports a note for the table.
+  For example:
 
   ```yaml
   tables:
@@ -150,13 +154,16 @@ tables:
   ```
 
 - A literal key that names a table **not** present in the source is still
-  reported as *not found*. A regex that matches no table is simply skipped.
-- Entries of the top-level `skip:` list can be regex too.
+  reported as *not found*. A regex that matches no table is skipped with a
+  `table_pattern_unmatched` warning in the log.
+- Entries of the top-level `skip:` list can be regex too. Literal names there,
+  and the table names in key remapping, resolve the same way as literal keys.
+- Tables keep the order in which the file first mentions them.
 
 > **Note.** Key remapping needs literal table names: a `strategy: remapping`
-> column under a regex key, or a regex `table` in the `key_remapping:` section,
-> is rejected when the file is validated. The `--skip-tables` / `--only-tables`
-> flags also take literal names only.
+> column under a regex key, or a regex `table` or `foreign_keys[].table` in key
+> remapping, is rejected when the file is validated. The `--skip-tables` /
+> `--only-tables` flags also take literal names only.
 
 ### `rows`
 
