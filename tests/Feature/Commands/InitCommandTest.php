@@ -242,7 +242,10 @@ it('returns an IO error when a new .env cannot be written', function (): void {
     unset($_ENV['APP_KEY'], $_SERVER['APP_KEY']);
 
     Storage::shouldReceive('exists')->with('.env')->andReturn(false);
-    Storage::shouldReceive('put')->with('.env', Mockery::type('string'))->andReturn(false);
+    Storage::shouldReceive('put')
+        ->once()
+        ->with('.env', Mockery::on(fn (string $content): bool => preg_match('/^APP_KEY=base64:.+\n$/', $content) === 1))
+        ->andReturn(false);
 
     $this->artisan('init')
         ->expectsOutputToContain('permission denied')
@@ -260,7 +263,12 @@ it('returns an IO error when an existing .env cannot be overwritten', function (
     Storage::shouldReceive('exists')->with('.env')->andReturn(true);
     Storage::shouldReceive('get')->with('.env')->andReturn("DB_HOST=localhost\n");
     Storage::shouldReceive('path')->with('.env')->andReturn('/tmp/clonio-readonly.env');
-    Storage::shouldReceive('put')->with('.env', Mockery::type('string'))->andReturn(false);
+    Storage::shouldReceive('put')
+        ->once()
+        ->with('.env', Mockery::on(fn (string $content): bool => str_starts_with($content, "DB_HOST=localhost\nAPP_KEY=base64:")
+            && str_ends_with($content, "\n")
+            && substr_count($content, "\n") === 2))
+        ->andReturn(false);
 
     $this->artisan('init')
         ->expectsOutputToContain('permission denied')
@@ -520,7 +528,10 @@ it('reports the exact .env path when a new .env cannot be written', function ():
     g9_forgetAppKey();
 
     Storage::shouldReceive('exists')->with('.env')->andReturn(false);
-    Storage::shouldReceive('put')->with('.env', Mockery::type('string'))->andReturn(false);
+    Storage::shouldReceive('put')
+        ->once()
+        ->with('.env', Mockery::on(fn (string $content): bool => preg_match('/^APP_KEY=base64:.+\n$/', $content) === 1))
+        ->andReturn(false);
 
     [$exit, $display] = g9_runInit();
 
