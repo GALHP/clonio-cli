@@ -4,12 +4,18 @@ declare(strict_types=1);
 
 use App\Data\Cloning\CloningConfigData;
 use App\Data\Cloning\CloningOptionsData;
+use App\Data\Cloning\ColumnCloningConfigData;
+use App\Data\Cloning\KeyRemappingConfigData;
+use App\Data\Cloning\KeyRemappingForeignKeyData;
+use App\Data\Cloning\KeyRemappingTableData;
 use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Cloning\TableRowConfigData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
 use App\Enums\ClearMode;
+use App\Enums\KeyRemappingStrategy;
 use App\Services\Cloning\TableConfigResolver;
+use Illuminate\Support\Facades\Log;
 
 /**
  * @param  list<string>  $names
@@ -251,6 +257,109 @@ it('lets a later regex override an exact literal match', function (): void {
 
     $resolved = (new TableConfigResolver)->resolve($config, $schema);
 
+    // YAML order: users is mentioned first (the literal), Users only by the regex.
     expect(array_map(static fn (TableCloningConfigData $t): array => [$t->tableName, $t->rows->strategy], $resolved->tables))
-        ->toBe([['Users', 'full'], ['users', 'full']]);
+        ->toBe([['users', 'full'], ['Users', 'full']]);
+});
+
+function columnRule(string $column, string $strategy): ColumnCloningConfigData
+{
+    return new ColumnCloningConfigData($column, $strategy, null, [], null, null, null, null, null, null);
+}
+
+it('lets a later entry override an earlier skip strategy', function (): void {
+    $config = configWith([
+        tableEntry('/^logs_/', 'skip'),
+        tableEntry('logs_critical', 'full'),
+    ]);
+
+    $resolved = (new TableConfigResolver)->resolve($config, schemaWith(['logs_2025', 'logs_critical']));
+
+    expect($resolved->skipTables)->toBe(['logs_2025']);
+});
+
+it('skips a table under its source name only', function (): void {
+    $config = configWith([tableEntry('Users', 'skip')], skip: ['Sessions']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, schemaWith(['users', 'sessions']));
+
+    expect($resolved->skipTables)->toBe(['sessions', 'users']);
+});
+
+it('resolves key remapping tables and foreign keys like table keys', function (): void {
+    $config = new CloningConfigData(
+        version: '1',
+        connectionName: 'source',
+        options: new CloningOptionsData(1000, false, false, false, true, 'en_US'),
+        tables: [tableEntry('Users'), tableEntry('orders')],
+        keyRemapping: new KeyRemappingConfigData([
+            new KeyRemappingTableData('Users', 'id', KeyRemappingStrategy::NewUuid, [
+                new KeyRemappingForeignKeyData('Orders', 'user_id'),
+                new KeyRemappingForeignKeyData('Users', 'parent_id', selfReferential: true),
+            ]),
+        ]),
+    );
+
+    $remapping = (new TableConfigResolver)->resolve($config, schemaWith(['users', 'orders']))->keyRemapping;
+
+    expect($remapping?->tables)->toEqual([
+        new KeyRemappingTableData('users', 'id', KeyRemappingStrategy::NewUuid, [
+            new KeyRemappingForeignKeyData('orders', 'user_id'),
+            new KeyRemappingForeignKeyData('users', 'parent_id', selfReferential: true),
+        ]),
+    ]);
+});
+
+it('notes column rules that a later entry overrides', function (): void {
+    $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [
+        columnRule('email', 'fake'),
+        columnRule('iban', 'mask'),
+        columnRule('name', 'keep'),
+        columnRule('phone', 'null'),
+    ]);
+    $catchAll = new TableCloningConfigData('/.*/', new TableRowConfigData('last', 100, null), [columnRule('phone', 'hash')]);
+
+    $resolved = (new TableConfigResolver)->resolve(configWith([$users, $catchAll]), schemaWith(['users', 'orders']));
+
+    expect($resolved->getTable('users')?->notes)->toBe([
+        "Column rules of 'users' are overridden by the later entry '/.*/' and not applied: email, iban",
+    ])->and($resolved->getTable('orders')?->notes)->toBe([]);
+});
+
+it('warns about a regex key that matches no source table', function (): void {
+    Log::spy();
+
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([tableEntry('/^applicaton_/'), tableEntry('ghost'), tableEntry('users')]),
+        schemaWith(['users']),
+    );
+
+    Log::shouldHaveReceived('warning')->once()->with('table_pattern_unmatched', ['pattern' => '/^applicaton_/']);
+    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['ghost', 'users']);
+});
+
+it('keeps the tables in YAML order, not in schema order', function (): void {
+    $config = configWith([
+        tableEntry('users'),
+        tableEntry('ghost'),
+        tableEntry('/^logs_/'),
+        tableEntry('audit'),
+    ]);
+
+    $resolved = (new TableConfigResolver)->resolve($config, schemaWith(['audit', 'logs_b', 'logs_a', 'users']));
+
+    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))
+        ->toBe(['users', 'ghost', 'logs_b', 'logs_a', 'audit']);
+});
+
+it('applies an exact literal key only to its own table when a case-insensitive regex matches both', function (): void {
+    $config = configWith([
+        tableEntry('/^users$/i', 'full'),
+        tableEntry('users', 'first', 10),
+    ]);
+
+    $resolved = (new TableConfigResolver)->resolve($config, schemaWith(['Users', 'users']));
+
+    expect(array_map(static fn (TableCloningConfigData $t): array => [$t->tableName, $t->rows->strategy], $resolved->tables))
+        ->toBe([['Users', 'full'], ['users', 'first']]);
 });

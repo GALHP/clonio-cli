@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace App\Services\Cloning;
 
 use App\Data\Cloning\CloningConfigData;
+use App\Data\Cloning\ColumnCloningConfigData;
+use App\Data\Cloning\KeyRemappingConfigData;
+use App\Data\Cloning\KeyRemappingForeignKeyData;
+use App\Data\Cloning\KeyRemappingTableData;
 use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Expands regex table keys in a cloning config against the real source schema.
@@ -15,12 +20,14 @@ use App\Data\Schema\TableSchemaData;
  * A key under `tables:` is either a literal table name or a slash-delimited
  * regex (`/…/`). Regex keys are expanded to the concrete source tables they
  * match, case-sensitively unless the pattern carries the `i` flag. A literal
- * key names the table with exactly that name; only when no source table has
- * it does the key fall back to the one table that matches it case-insensitively
- * (none if several do). When several entries match the same table, the last
+ * name names the table with exactly that name; only when no source table has
+ * it does it fall back to the one table that matches it case-insensitively
+ * (none if several do). The same name resolution applies to every table
+ * reference in the config: table keys, the `skip:` list and the key remapping
+ * tables and foreign keys. When several entries match the same table, the last
  * one in YAML order wins. The result is a config whose `tables` all carry
- * concrete table names, so the rest of the run (orchestrator, getTable(),
- * dependency sort, audit) keeps working against literal names.
+ * concrete table names, in YAML order, so the rest of the run (orchestrator,
+ * getTable(), dependency sort, audit) keeps working against literal names.
  */
 final readonly class TableConfigResolver
 {
@@ -30,117 +37,198 @@ final readonly class TableConfigResolver
             static fn (TableSchemaData $t): string => $t->name,
             $schema->tables,
         );
+        // Each name is looked up once; the scan over all source tables is the costly part.
+        $targets = [];
+        $resolveName = function (string $name) use (&$targets, $realNames): string {
+            return $targets[$name] ??= $this->literalTarget($name, $realNames) ?? $name; // @pest-mutate-ignore: CoalesceEqualToEqual
+        };
 
-        /** @var array<string, ?string> $literalTargets literal key => the source table it names, or null */
-        $literalTargets = [];
-        foreach ($config->tables as $entry) {
-            if (! $this->isRegex($entry->tableName)) {
-                $literalTargets[$entry->tableName] = $this->literalTarget($entry->tableName, $realNames);
-            }
-        }
-
-        /** @var array<string, TableCloningConfigData> $resolved */
+        /** @var list<array{int, TableCloningConfigData}> $resolved [first matching entry, table] */
         $resolved = [];
+
+        /** @var array<int, int> $matchedEntries */
+        $matchedEntries = [];
 
         // 1. Expand every real table against the config entries (last match wins).
         foreach ($realNames as $realName) {
-            $winner = null;
+            /** @var list<int> $matching */
+            $matching = [];
 
-            foreach ($config->tables as $entry) {
+            foreach ($config->tables as $index => $entry) {
                 $matches = $this->isRegex($entry->tableName)
                     ? preg_match($entry->tableName, $realName) === 1
-                    : $literalTargets[$entry->tableName] === $realName;
+                    : $resolveName($entry->tableName) === $realName;
 
                 if ($matches) {
-                    $winner = $entry;
+                    $matching[] = $index;
+                    $matchedEntries[$index] = $index;
                 }
             }
 
-            if ($winner instanceof TableCloningConfigData) {
-                $resolved[$realName] = new TableCloningConfigData(
-                    tableName: $realName,
-                    rows: $winner->rows,
-                    columns: $winner->columns,
-                );
+            if ($matching === []) {
+                continue;
             }
+
+            $winner = $config->tables[$matching[count($matching) - 1]];
+            $resolved[] = [$matching[0], new TableCloningConfigData(
+                tableName: $realName,
+                rows: $winner->rows,
+                columns: $winner->columns,
+                notes: $this->overriddenColumnNotes($config->tables, $matching),
+            )];
         }
 
         // 2. Preserve literal entries that name no source table, so a mistyped
-        //    or dropped table still reports NotFound as before. (Regex keys that
-        //    match nothing were never a concrete table — drop them.)
-        foreach ($config->tables as $entry) {
-            if (! $this->isRegex($entry->tableName) && $literalTargets[$entry->tableName] === null) {
-                $resolved[$entry->tableName] = $entry;
+        //    or dropped table still reports NotFound as before. A regex that
+        //    matches nothing was never a concrete table: drop it, but say so,
+        //    as a typo would otherwise leave its tables out without a trace.
+        foreach ($config->tables as $index => $entry) {
+            if (isset($matchedEntries[$index])) {
+                continue;
             }
+
+            if ($this->isRegex($entry->tableName)) {
+                Log::warning('table_pattern_unmatched', ['pattern' => $entry->tableName]);
+
+                continue;
+            }
+
+            $resolved[] = [$index, $entry];
         }
+
+        // Keep YAML order: a table sits where it is first mentioned. The sort is
+        // stable, so tables first matched by the same entry keep schema order.
+        usort($resolved, static fn (array $a, array $b): int => $a[0] <=> $b[0]);
+        $tables = array_map(static fn (array $r): TableCloningConfigData => $r[1], $resolved);
 
         return new CloningConfigData(
             version: $config->version,
             connectionName: $config->connectionName,
             options: $config->options,
-            tables: array_values($resolved),
-            keyRemapping: $config->keyRemapping,
-            skipTables: $this->resolveSkipTables($config, $realNames, $resolved),
+            tables: $tables,
+            keyRemapping: $this->resolveKeyRemapping($config->keyRemapping, $resolveName),
+            skipTables: $this->resolveSkipTables($config->skipTables, $tables, $realNames, $resolveName),
         );
     }
 
     /**
-     * @param  list<string>  $realNames
-     * @param  array<string, TableCloningConfigData>  $resolvedTables
+     * Notes for a table whose winning entry drops column rules of an earlier
+     * matching entry, e.g. a trailing catch-all regex that would otherwise copy
+     * columns unanonymized without a word.
+     *
+     * @param  list<TableCloningConfigData>  $entries
+     * @param  list<int>  $matching  Indexes of the entries matching the table, in YAML order
      * @return list<string>
      */
-    private function resolveSkipTables(CloningConfigData $config, array $realNames, array $resolvedTables): array
+    private function overriddenColumnNotes(array $entries, array $matching): array
     {
-        /** @var list<string> $skip */
-        $skip = [];
+        $winner = $entries[$matching[count($matching) - 1]];
+        $notes = [];
 
-        // Carry over the configured skip list, expanding any regex entries.
-        foreach ($config->skipTables as $entry) {
-            if ($this->isRegex($entry)) {
-                foreach ($realNames as $realName) {
-                    if (preg_match($entry, $realName) === 1 && ! in_array($realName, $skip, true)) {
-                        $skip[] = $realName;
-                    }
-                }
+        // The winner itself drops nothing, so it needs no special case here.
+        foreach ($matching as $index) {
+            $dropped = array_map(
+                static fn (ColumnCloningConfigData $c): string => $c->columnName,
+                array_filter(
+                    $entries[$index]->columns,
+                    static fn (ColumnCloningConfigData $c): bool => $c->strategy !== 'keep' && ! $winner->getColumn($c->columnName) instanceof ColumnCloningConfigData,
+                ),
+            );
 
-                continue;
-            }
-
-            if (! in_array($entry, $skip, true)) {
-                $skip[] = $entry;
-            }
-        }
-
-        // Any resolved table whose winning rule is `rows.strategy: skip`.
-        foreach ($resolvedTables as $table) {
-            if ($table->rows->strategy === 'skip' && ! in_array($table->tableName, $skip, true)) {
-                $skip[] = $table->tableName;
+            if ($dropped !== []) {
+                $notes[] = sprintf(
+                    "Column rules of '%s' are overridden by the later entry '%s' and not applied: %s",
+                    $entries[$index]->tableName,
+                    $winner->tableName,
+                    implode(', ', $dropped),
+                );
             }
         }
 
-        return $skip;
+        return $notes;
     }
 
     /**
-     * The source table a literal key names: the table with exactly that name,
-     * else the single table matching it case-insensitively, else none (also
-     * when the case-insensitive match is ambiguous, e.g. `Users` and `users`).
+     * Key remapping names its tables and foreign keys by literal name; resolve
+     * them like table keys so they match the concrete tables.
+     *
+     * @param  callable(string): string  $resolveName
+     */
+    private function resolveKeyRemapping(?KeyRemappingConfigData $keyRemapping, callable $resolveName): ?KeyRemappingConfigData
+    {
+        if (! $keyRemapping instanceof KeyRemappingConfigData) {
+            return null;
+        }
+
+        return new KeyRemappingConfigData(array_map(
+            static fn (KeyRemappingTableData $t): KeyRemappingTableData => new KeyRemappingTableData(
+                table: $resolveName($t->table),
+                primaryKey: $t->primaryKey,
+                strategy: $t->strategy,
+                foreignKeys: array_map(
+                    static fn (KeyRemappingForeignKeyData $fk): KeyRemappingForeignKeyData => new KeyRemappingForeignKeyData(
+                        table: $resolveName($fk->table),
+                        column: $fk->column,
+                        selfReferential: $fk->selfReferential,
+                    ),
+                    $t->foreignKeys,
+                ),
+            ),
+            $keyRemapping->tables,
+        ));
+    }
+
+    /**
+     * The tables to skip: the `skip:` list (regex entries expanded, literal
+     * entries resolved) plus every table whose winning entry has
+     * `rows.strategy: skip`.
+     *
+     * @param  list<string>  $skipList
+     * @param  list<TableCloningConfigData>  $tables
+     * @param  list<string>  $realNames
+     * @param  callable(string): string  $resolveName
+     * @return list<string>
+     */
+    private function resolveSkipTables(array $skipList, array $tables, array $realNames, callable $resolveName): array
+    {
+        $skip = [];
+
+        foreach ($skipList as $entry) {
+            $names = $this->isRegex($entry)
+                ? array_filter($realNames, static fn (string $name): bool => preg_match($entry, $name) === 1)
+                : [$resolveName($entry)];
+
+            foreach ($names as $name) {
+                $skip[$name] = $name;
+            }
+        }
+
+        foreach ($tables as $table) {
+            if ($table->rows->strategy === 'skip') {
+                $skip[$table->tableName] = $table->tableName;
+            }
+        }
+
+        return array_values($skip);
+    }
+
+    /**
+     * The single source table a literal name matches case-insensitively, or
+     * null when none or several do (e.g. `Users` and `users`). resolveName()
+     * falls back to the name itself, so a table with exactly that name always
+     * wins over a case-insensitive match.
      *
      * @param  list<string>  $realNames
      */
-    private function literalTarget(string $key, array $realNames): ?string
+    private function literalTarget(string $name, array $realNames): ?string
     {
-        if (in_array($key, $realNames, true)) {
-            return $key;
-        }
-
-        $candidates = array_values(array_filter($realNames, static fn (string $name): bool => strcasecmp($key, $name) === 0));
+        $candidates = array_values(array_filter($realNames, static fn (string $real): bool => strcasecmp($name, $real) === 0));
 
         return count($candidates) === 1 ? $candidates[0] : null;
     }
 
-    private function isRegex(string $key): bool
+    private function isRegex(string $name): bool
     {
-        return str_starts_with($key, '/');
+        return str_starts_with($name, '/');
     }
 }

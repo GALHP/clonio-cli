@@ -690,7 +690,7 @@ YAML;
     expect($config->skipTables)->toBe(['audit_logs']);
 });
 
-it('collects tables with rows.strategy skip into skipTables', function (): void {
+it('keeps rows.strategy skip on the table and out of skipTables', function (): void {
     Storage::fake('local');
 
     $yaml = <<<'YAML'
@@ -715,7 +715,10 @@ YAML;
 
     $config = (new CloningYamlLoader)->load('test.cloning.yaml');
 
-    expect($config->skipTables)->toBe(['audit_logs']);
+    // TableConfigResolver derives the skipped tables from the winning entries,
+    // so a later entry for the same table can still override the skip.
+    expect($config->skipTables)->toBe([])
+        ->and($config->getTable('audit_logs')?->rows->strategy)->toBe('skip');
 });
 
 it('deduplicates tables that appear in both skip list and as strategy skip', function (): void {

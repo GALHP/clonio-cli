@@ -83,3 +83,46 @@ YAML);
         ->and(regexTablesTargetIds('users'))->toBe([1, 2, 3]) // 'Users' falls back to the only case-insensitive match
         ->and(regexTablesTargetIds('tmp_cache'))->toBe([]); // skipped by the regex in skip:
 });
+
+it('lets a later entry override a regex skip and notes overridden column rules', function (): void {
+    $source = regexTablesSeedSource();
+    Storage::put('target.sqlite', '');
+    Storage::put('clonio.json', (string) json_encode(['connections' => [
+        'production-db' => ['type' => 'sqlite', 'database' => $source, 'is_production' => true],
+        'staging' => ['type' => 'sqlite', 'database' => Storage::path('target.sqlite'), 'is_production' => false],
+    ]]));
+    Storage::put('override.cloning.yaml', <<<'YAML'
+version: "1"
+connection: production-db
+options:
+  chunk_size: 2
+  enforce_column_types: false
+  drop_unknown_tables: false
+  disable_foreign_key_checks: true
+  faker_locale: en_US
+tables:
+  users:
+    rows:
+      strategy: full
+    columns:
+      note:
+        strategy: "null"
+  '/^logs_/':
+    rows:
+      strategy: skip
+  logs_critical:
+    rows:
+      strategy: full
+  '/^users$/':
+    rows:
+      strategy: full
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'override.cloning.yaml', '--target' => 'staging'])
+        ->expectsOutputToContain("Note: users: Column rules of 'users' are overridden by the later entry '/^users$/' and not applied: note")
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(regexTablesTargetIds('logs_2025'))->toBe([])
+        ->and(regexTablesTargetIds('logs_critical'))->toBe([1, 2, 3, 4, 5])
+        ->and(regexTablesTargetIds('users'))->toBe([1, 2, 3]);
+});

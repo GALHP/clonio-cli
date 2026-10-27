@@ -213,6 +213,7 @@ class CloningRunOrchestrator
                     $targetTable,
                     $dumpSink instanceof SqlDumpService,
                 );
+            $notes = [...$tableConfig->notes, ...$notes];
 
             if (! $schemaOnly && $sourceTable instanceof TableSchemaData) { // @pest-mutate-ignore: InstanceOfToTrue
                 $emptyParents = array_values(array_unique(array_filter( // @pest-mutate-ignore: UnwrapArrayValues
