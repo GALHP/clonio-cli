@@ -428,7 +428,7 @@ Resolves the source connection (from the YAML `connection` field) and the target
 
 ### Phase 3 — Dry-run
 
-Only runs when `--dry-run` is set. Fetches both the source and target schemas, computes the schema diff, counts estimated rows per table, and prints a summary. Tables not found in the source are shown as `NOT FOUND`. Exits with code `0` after printing the summary.
+Only runs when `--dry-run` is set. Fetches both the source and target schemas, computes the schema diff, counts estimated rows per table, and prints a summary. Tables not found in the source are shown as `NOT FOUND`. Tables the run would skip (the YAML `skip:` list, `rows.strategy: skip`, `--skip-tables`, tables outside `--only-tables`, and tables cascaded from those) are shown with strategy `skip` and 0 rows, and are not counted. Exits with code `0` after printing the summary.
 
 ### Phase 4 — Schema Replication
 

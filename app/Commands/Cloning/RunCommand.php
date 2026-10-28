@@ -38,6 +38,7 @@ use App\Services\Audit\WebhookDeliveryAdapter;
 use App\Services\Cloning\CloningRunOrchestrator;
 use App\Services\Cloning\CloningYamlLoader;
 use App\Services\Cloning\CloningYamlValidator;
+use App\Services\Cloning\DependencyResolver;
 use App\Services\Cloning\EncryptedFileKeyRemappingStore;
 use App\Services\Cloning\KeyRemappingService;
 use App\Services\Cloning\SkippedRow;
@@ -361,7 +362,7 @@ class RunCommand extends Command
 
         // ─── Phase 3: Dry-run ──────────────────────────────────────────────────
         if ((bool) $this->option('dry-run')) { // @pest-mutate-ignore: RemoveBooleanCast
-            return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $tableResolver, $ci);
+            return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $tableResolver, $skipTables, $onlyTables, $ci);
         }
 
         // ─── Phase 4-6: Full Run ───────────────────────────────────────────────
@@ -826,12 +827,18 @@ class RunCommand extends Command
         return ExitCode::Success->value;
     }
 
+    /**
+     * @param  list<string>  $skipTables
+     * @param  list<string>  $onlyTables
+     */
     private function runDryRun(
         CloningConfigData $config,
         ConnectionData $source,
         ConnectionData $target,
         SchemaInspector $inspector,
         TableConfigResolver $tableResolver,
+        array $skipTables,
+        array $onlyTables,
         bool $ci,
     ): int {
         try {
@@ -844,13 +851,19 @@ class RunCommand extends Command
 
         // Expand regex table keys like the full run does, so the estimate covers
         // the tables they match instead of counting the patterns as not found.
-        $resolved = $this->resolveTables($tableResolver, $config, $schema, [], []);
+        $resolved = $this->resolveTables($tableResolver, $config, $schema, $skipTables, $onlyTables);
 
         if ($resolved === null) {
             return ExitCode::ConfigError->value;
         }
 
-        [$config] = $resolved;
+        [$config, $skipTables, $onlyTables] = $resolved;
+
+        // Leave out the tables the run would skip, by flag or by cascade, the
+        // way the orchestrator does; they need no row count either.
+        $tableNames = array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $config->tables);
+        $excluded = DependencyResolver::excludedTables($tableNames, $skipTables, $onlyTables);
+        $excluded = [...$excluded, ...resolve(DependencyResolver::class)->computeCascadeExclusions($schema, $excluded, $tableNames)];
 
         $schemaDiff = null;
 
@@ -870,6 +883,19 @@ class RunCommand extends Command
             $tableName = $tableConfig->tableName;
             $exists = $schema->hasTable($tableName);
             $estimatedRows = null;
+
+            if ($exists && in_array($tableName, $excluded, true)) {
+                $dryRunTables[] = new DryRunTableData(
+                    tableName: $tableName,
+                    exists: true,
+                    estimatedRows: 0,
+                    rowStrategy: 'skip',
+                    rowLimit: null,
+                    transformedColumns: [],
+                );
+
+                continue;
+            }
 
             if ($exists) {
                 try {

@@ -13,6 +13,7 @@ use App\Data\Cloning\TableRunStatus;
 use App\Data\ConnectionData;
 use App\Data\Schema\ColumnSchemaData;
 use App\Data\Schema\DatabaseSchemaData;
+use App\Data\Schema\ForeignKeyData;
 use App\Data\Schema\TableSchemaData;
 use App\Enums\DatabaseConnectionType;
 use App\Exceptions\KeyRemappingExhaustedException;
@@ -1076,6 +1077,53 @@ it('estimates rows per strategy in a dry run', function (): void {
         ."\n  No data will be transferred. Run without --dry-run to execute.\n\n"
     );
 });
+
+it('shows the tables the run would skip as skipped in a dry run, without counting them', function (array $options, array $counted, array $rows): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml(
+        "  users:\n    rows:\n      strategy: full\n    columns:\n      email:\n        strategy: \"null\"\n"
+        ."  orders:\n    rows:\n      strategy: full\n"
+        ."  logs_2025:\n    rows:\n      strategy: skip\n"
+        ."  tmp_cache:\n    rows:\n      strategy: full\n"
+        ."  items:\n    rows:\n      strategy: full\n"
+        ."skip:\n  - '/^tmp_/'\n"
+    ));
+    g1_bind(inspect: fn (ConnectionData $c): DatabaseSchemaData => $c->name === 'production-db'
+        ? g1_schema([
+            g1_table('users'),
+            new TableSchemaData('orders', [], [new ForeignKeyData('cache_id', 'tmp_cache', 'id')]),
+            g1_table('logs_2025'),
+            g1_table('tmp_cache'),
+            g1_table('items'),
+        ])
+        : throw new RuntimeException('target down'));
+    g1_db(array_combine(
+        array_map(static fn (string $t): string => sprintf('SELECT COUNT(*) as count FROM `%s`', $t), $counted),
+        array_map(static fn (string $t): array => [(object) ['count' => 5]], $counted),
+    ), 2 + count($counted));
+
+    [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--dry-run' => true, ...$options]);
+
+    expect($code)->toBe(0)->and($out)->toBe(
+        "\n  Dry-run: production-db\n\n"
+        .g1_row('Table', 'Rows (est.)', 'Strategy', 'Transformations')
+        .g1_sep()
+        .implode('', array_map(static fn (array $row): string => g1_row(...$row), $rows))
+        .g1_sep()
+        .sprintf("  Total                    %d rows across 5 tables\n", 5 * count($counted))
+        ."\n  No data will be transferred. Run without --dry-run to execute.\n\n"
+    );
+})->with([
+    // tmp_cache by the skip: list, logs_2025 by strategy, orders by cascade from tmp_cache
+    'yaml skips' => [[], ['users', 'items'], [
+        ['users', '5', 'full', 'email'], ['orders', '0', 'skip', '—'], ['logs_2025', '0', 'skip', '—'], ['tmp_cache', '0', 'skip', '—'], ['items', '5', 'full', '—'],
+    ]],
+    '--skip-tables' => [['--skip-tables' => 'ITEMS'], ['users'], [
+        ['users', '5', 'full', 'email'], ['orders', '0', 'skip', '—'], ['logs_2025', '0', 'skip', '—'], ['tmp_cache', '0', 'skip', '—'], ['items', '0', 'skip', '—'],
+    ]],
+    '--only-tables keeps the yaml skips' => [['--only-tables' => 'USERS,logs_2025,items'], ['users', 'items'], [
+        ['users', '5', 'full', 'email'], ['orders', '0', 'skip', '—'], ['logs_2025', '0', 'skip', '—'], ['tmp_cache', '0', 'skip', '—'], ['items', '5', 'full', '—'],
+    ]],
+]);
 
 it('expands regex table keys in a dry run', function (): void {
     Storage::disk('local')->put('t.yaml', g1_yaml(
