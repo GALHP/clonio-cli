@@ -83,6 +83,9 @@ in `/…/`, trailing flags allowed). Regex keys are expanded against the actual
 source tables at run time (also for `--dry-run`), so a single entry can
 configure a whole family of tables:
 
+- A regex key pulls every source table it matches into the clone, including
+  tables without any other configuration, whose columns are copied unchanged;
+  the docs warn against catch-all patterns such as `'/.*/'`.
 - Keys without a leading `/` are always literal — there is no glob/`*` wildcard.
 - Regex keys match as written (case-sensitive unless the `i` flag is set).
 - A literal key names the table with exactly that name; only when no source

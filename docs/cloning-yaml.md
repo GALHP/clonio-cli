@@ -126,6 +126,12 @@ tables:
       clear: delete
 ```
 
+> **Warning.** A regex key brings **every** source table it matches into the
+> clone, including tables you have not configured otherwise; their columns are
+> copied as they are. Keep patterns narrow (`'/^app_logs_/'`, not `'/.*/'`)
+> and give every matched table that holds personal data its column rules.
+> `cloning:run --dry-run` lists the tables each pattern matches.
+
 - **Quote regex keys with single quotes.** In double quotes YAML treats `\d`,
   `\w` and so on as escape sequences and rejects the file; there you would
   have to write `\\d`.
