@@ -89,6 +89,25 @@ class DependencyResolver
     }
 
     /**
+     * The tables a run leaves out by flag: with --only-tables every table not
+     * named there, and in any case every table to skip. A skip always holds;
+     * --only-tables only narrows the run further.
+     *
+     * @param  list<string>  $tableNames  The configured tables
+     * @param  list<string>  $skipTables
+     * @param  list<string>  $onlyTables
+     * @return list<string>
+     */
+    public static function excludedTables(array $tableNames, array $skipTables, array $onlyTables): array
+    {
+        $notOnly = $onlyTables === []
+            ? []
+            : array_filter($tableNames, static fn (string $t): bool => ! in_array($t, $onlyTables, true));
+
+        return array_values(array_unique([...$notOnly, ...$skipTables]));
+    }
+
+    /**
      * Given excluded tables, find all tables that have FK dependency on them.
      * Returns the additional tables to exclude (cascade set, not including the original excluded tables).
      *

@@ -494,7 +494,7 @@ clonio cloning:run prod.cloning.yaml --target staging --only-tables=users,orders
 
 Regex is not accepted on the command line: a value wrapped in `/…/` is a `ValidationError (4)`, raised before any connection is opened. Put patterns in the YAML [`skip:` list](#skipping-tables-in-yaml) instead.
 
-Using both flags together is a `ValidationError (4)`.
+Using both flags together is a `ValidationError (4)`. Tables skipped in the YAML (the `skip:` list or `rows.strategy: skip`) stay skipped with `--only-tables`; the flag only narrows the run further.
 
 ### FK-Dependent Cascade
 

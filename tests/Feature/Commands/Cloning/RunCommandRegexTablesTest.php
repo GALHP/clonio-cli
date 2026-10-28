@@ -209,3 +209,27 @@ YAML);
     'case-insensitive name' => ['Users,LOGS_2025', ['users', 'logs_2025']],
     'typo' => ['ussers', []],
 ]);
+
+it('keeps skipping YAML skips with --only-tables', function (): void {
+    regexTablesSetUp(<<<'YAML'
+tables:
+  users:
+    rows:
+      strategy: full
+  '/^tmp_/':
+    rows:
+      strategy: full
+  '/^logs_20/':
+    rows:
+      strategy: skip
+skip:
+  - '/^tmp_/'
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'cloning.yaml', '--target' => 'staging', '--ci' => true, '--only-tables' => 'tmp_cache,users,logs_2025'])
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(regexTablesTargetIds('users'))->toBe([1, 2, 3])
+        ->and(regexTablesTargetIds('tmp_cache'))->toBe([])
+        ->and(regexTablesTargetIds('logs_2025'))->toBe([]);
+});

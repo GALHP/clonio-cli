@@ -188,3 +188,13 @@ it('adds a cascaded table only once when several of its foreign keys hit exclude
 
     expect($cascade)->toBe(['reviews']);
 });
+
+it('excludes the tables to skip, and with an only list every table outside it', function (array $skip, array $only, array $expected): void {
+    expect(DependencyResolver::excludedTables(['a', 'b', 'c'], $skip, $only))->toBe($expected);
+})->with([
+    'skip only' => [['b', 'ghost'], [], ['b', 'ghost']],
+    'only' => [[], ['a'], ['b', 'c']],
+    'only and skip' => [['b', 'c'], ['a', 'b'], ['c', 'b']],
+    'duplicate skip' => [['b', 'b', 'c'], [], ['b', 'c']],
+    'nothing' => [[], [], []],
+]);

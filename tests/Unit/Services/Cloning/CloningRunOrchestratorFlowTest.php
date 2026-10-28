@@ -267,6 +267,24 @@ it('records tables left out by --only with the only-filter reason', function ():
         ->and($result->tables[1]->status)->toBe(TableRunStatus::Transferred);
 });
 
+it('keeps skipping a table that --only names', function (): void {
+    g3_orch_db();
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('a'), g3_orch_table('b'), g3_orch_table('c')]),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('a'), g3_orch_schema_table('b'), g3_orch_schema_table('c')]),
+        skip: ['b'],
+        only: ['a', 'b'],
+    );
+
+    expect($result->tables[0])->toEqual(new TableRunResultData('c', TableRunStatus::SkippedByFlag, 0, 0, 0.0, 'excluded by --only filter'))
+        ->and($result->tables[1])->toEqual(new TableRunResultData('b', TableRunStatus::SkippedByFlag, 0, 0, 0.0, 'explicitly excluded via --skip'))
+        ->and($result->tables[2]->tableName)->toBe('a')
+        ->and($result->tables[2]->status)->toBe(TableRunStatus::Transferred)
+        ->and($result->tables)->toHaveCount(3);
+});
+
 it('records cascade exclusions with zero counts and a log event', function (): void {
     g3_orch_db();
 
