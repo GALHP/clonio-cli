@@ -262,8 +262,10 @@ final readonly class TableConfigResolver
 
     /**
      * The tables to skip: the `skip:` list (regex entries expanded, literal
-     * entries resolved) plus every table whose winning entry has
-     * `rows.strategy: skip`.
+     * entries resolved) plus every source table whose winning entry has
+     * `rows.strategy: skip`. A literal key with a typo names no source table:
+     * it stays out of the list so the run reports it as not found instead of
+     * as skipped, where it would hide that the table it meant is copied.
      *
      * @param  list<string>  $skipList
      * @param  list<TableCloningConfigData>  $tables
@@ -275,7 +277,7 @@ final readonly class TableConfigResolver
         $skip = $this->resolveReferences($skipList, $schema, 'skip entry', $onUnmatched);
 
         foreach ($tables as $table) {
-            if ($table->rows->strategy === 'skip') {
+            if ($table->rows->strategy === 'skip' && $schema->hasTable($table->tableName)) {
                 $skip[] = $table->tableName;
             }
         }

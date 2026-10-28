@@ -233,3 +233,19 @@ YAML);
         ->and(regexTablesTargetIds('tmp_cache'))->toBe([])
         ->and(regexTablesTargetIds('logs_2025'))->toBe([]);
 });
+
+it('reports a mistyped skip key as not found, also with --ci', function (): void {
+    regexTablesSetUp(<<<'YAML'
+tables:
+  tmp_cahce:
+    rows:
+      strategy: skip
+  users:
+    rows:
+      strategy: full
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'cloning.yaml', '--target' => 'staging', '--ci' => true])
+        ->expectsOutputToContain('Warning: 1 table not found in source (tmp_cahce)')
+        ->assertExitCode(ExitCode::Success->value);
+});

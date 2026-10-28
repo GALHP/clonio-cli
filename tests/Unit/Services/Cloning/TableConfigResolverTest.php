@@ -374,6 +374,15 @@ it('lists a table that is both in the skip list and has strategy skip once', fun
     expect($resolved->skipTables)->toBe(['users', 'orders']);
 });
 
+it('leaves a skip key that names no source table to be reported as not found', function (): void {
+    $config = configWith([tableEntry('audti_logs', 'skip'), tableEntry('/.*/', 'full')]);
+
+    $resolved = (new TableConfigResolver)->resolve($config, schemaWith(['audit_logs']));
+
+    expect($resolved->skipTables)->toBe([])
+        ->and(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['audti_logs', 'audit_logs']);
+});
+
 it('skips a table under its source name only', function (): void {
     $config = configWith([tableEntry('Users', 'skip')], skip: ['Sessions']);
 

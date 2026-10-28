@@ -183,7 +183,7 @@ tables:
   ```
 
 - A literal key that names a table **not** present in the source is still
-  reported as *not found*. A regex key, or a `skip:` entry, that matches no
+  reported as *not found*, also when it sets `strategy: skip`. A regex key, or a `skip:` entry, that matches no
   table prints a warning (also with `--ci`) and logs a
   `table_reference_unmatched` event, so a typo cannot silently leave tables
   out or unskipped.
