@@ -247,7 +247,7 @@ it('keeps every skip entry once, literal or expanded from a regex', function ():
     expect($resolved->skipTables)->toBe(['tmp_a', 'tmp_b', 'cache']);
 });
 
-it('lets a later regex override an exact literal match', function (): void {
+it('lets an exact literal key beat a later regex', function (): void {
     $config = configWith([
         tableEntry('users', 'first', 10),
         tableEntry('/^users$/i', 'full'),
@@ -259,7 +259,90 @@ it('lets a later regex override an exact literal match', function (): void {
 
     // YAML order: users is mentioned first (the literal), Users only by the regex.
     expect(array_map(static fn (TableCloningConfigData $t): array => [$t->tableName, $t->rows->strategy], $resolved->tables))
-        ->toBe([['users', 'full'], ['Users', 'full']]);
+        ->toBe([['users', 'first'], ['Users', 'full']]);
+});
+
+it('lets a literal key beat a regex whatever their order', function (array $order): void {
+    $entries = ['regex' => tableEntry('/^logs_/', 'last', 1), 'literal' => tableEntry('logs_critical', 'full')];
+
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith(array_map(static fn (string $key): TableCloningConfigData => $entries[$key], $order)),
+        schemaWith(['logs_2025', 'logs_critical']),
+    );
+
+    expect($resolved->getTable('logs_critical')?->rows->strategy)->toBe('full')
+        ->and($resolved->getTable('logs_2025')?->rows->strategy)->toBe('last');
+})->with([
+    'regex first' => [['regex', 'literal']],
+    'literal first' => [['literal', 'regex']],
+]);
+
+it('lets an exact literal key beat a case-insensitive one whatever their order', function (array $order): void {
+    $entries = [
+        'exact' => new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [columnRule('email', 'hash')]),
+        'insensitive' => new TableCloningConfigData('USERS', new TableRowConfigData('first', 10, null), [columnRule('email', 'fake'), columnRule('iban', 'mask')]),
+    ];
+
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith(array_map(static fn (string $key): TableCloningConfigData => $entries[$key], $order)),
+        schemaWith(['users']),
+    );
+
+    expect($resolved->getTable('users')?->rows->strategy)->toBe('full')
+        ->and($resolved->getTable('users')?->columns)->toEqual([columnRule('email', 'hash'), columnRule('iban', 'mask')]);
+})->with([
+    'exact first' => [['exact', 'insensitive']],
+    'insensitive first' => [['insensitive', 'exact']],
+]);
+
+it('lets the last of several matching regex keys win', function (): void {
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([tableEntry('/^logs_/', 'last', 1), tableEntry('/^logs_2/', 'full')]),
+        schemaWith(['logs_2025', 'logs_archive']),
+    );
+
+    expect($resolved->getTable('logs_2025')?->rows->strategy)->toBe('full')
+        ->and($resolved->getTable('logs_archive')?->rows->strategy)->toBe('last');
+});
+
+it('keeps a regex skip against any other regex, but not against a literal key', function (array $order): void {
+    $entries = [
+        'skip' => tableEntry('/^audit_/', 'skip'),
+        'catch-all' => tableEntry('/.*/', 'first', 100),
+        'literal' => tableEntry('audit_keep', 'full'),
+    ];
+
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith(array_map(static fn (string $key): TableCloningConfigData => $entries[$key], $order)),
+        schemaWith(['audit_2024', 'audit_keep', 'orders']),
+    );
+
+    expect($resolved->getTable('audit_2024')?->rows->strategy)->toBe('skip')
+        ->and($resolved->getTable('audit_keep')?->rows->strategy)->toBe('full')
+        ->and($resolved->getTable('orders')?->rows->strategy)->toBe('first')
+        ->and($resolved->skipTables)->toBe(['audit_2024']);
+})->with([
+    'catch-all last' => [['skip', 'catch-all', 'literal']],
+    'catch-all first' => [['catch-all', 'skip', 'literal']],
+    'literal first' => [['literal', 'skip', 'catch-all']],
+]);
+
+it('takes the rows of the last regex skip when several regex keys skip a table', function (): void {
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([tableEntry('/^audit_/', 'skip', 1), tableEntry('/_2024$/', 'skip', 2), tableEntry('/.*/', 'full')]),
+        schemaWith(['audit_2024']),
+    );
+
+    expect($resolved->getTable('audit_2024')?->rows->limit)->toBe(2);
+});
+
+it('keeps a literal skip when a broader regex follows', function (): void {
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([tableEntry('audit_logs', 'skip'), tableEntry('/.*/', 'first', 100)]),
+        schemaWith(['audit_logs', 'orders']),
+    );
+
+    expect($resolved->skipTables)->toBe(['audit_logs']);
 });
 
 function columnRule(string $column, string $strategy): ColumnCloningConfigData
@@ -310,16 +393,25 @@ it('resolves key remapping tables and foreign keys like table keys', function ()
     ]);
 });
 
-it('keeps the column rules of an earlier entry when a broader regex follows', function (): void {
+it('keeps the rules of a literal entry when a broader regex follows', function (): void {
     $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [columnRule('email', 'fake')]);
     $catchAll = tableEntry('/^.*$/', 'first', 100);
 
     $resolved = (new TableConfigResolver)->resolve(configWith([$users, $catchAll]), schemaWith(['users', 'orders']));
 
     expect($resolved->getTable('users')?->columns)->toEqual([columnRule('email', 'fake')])
-        ->and($resolved->getTable('users')?->rows)->toEqual($catchAll->rows)
+        ->and($resolved->getTable('users')?->rows)->toEqual($users->rows)
         ->and($resolved->getTable('orders')?->columns)->toBe([])
         ->and($resolved->getTable('orders')?->rows)->toEqual($catchAll->rows);
+});
+
+it('lets the column rules of a literal entry override those of a later regex', function (): void {
+    $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [columnRule('email', 'hash')]);
+    $catchAll = new TableCloningConfigData('/.*/', new TableRowConfigData('full', null, null), [columnRule('email', 'fake'), columnRule('iban', 'mask')]);
+
+    $resolved = (new TableConfigResolver)->resolve(configWith([$users, $catchAll]), schemaWith(['users']));
+
+    expect($resolved->getTable('users')?->columns)->toEqual([columnRule('email', 'hash'), columnRule('iban', 'mask')]);
 });
 
 it('merges column rules per column, a later entry overriding only the columns it names', function (): void {

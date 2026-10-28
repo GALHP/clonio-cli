@@ -10,6 +10,7 @@ use App\Data\Cloning\KeyRemappingConfigData;
 use App\Data\Cloning\KeyRemappingForeignKeyData;
 use App\Data\Cloning\KeyRemappingTableData;
 use App\Data\Cloning\TableCloningConfigData;
+use App\Data\Cloning\TableRowConfigData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
 use Illuminate\Support\Facades\Log;
@@ -25,15 +26,22 @@ use RuntimeException;
  * it does it fall back to the one table that matches it case-insensitively
  * (none if several do). The same name resolution applies to every table
  * reference in the config: table keys, the `skip:` list and the key remapping
- * tables and foreign keys. When several entries match the same table, the last
- * one in YAML order wins for `rows`; column rules merge per column, a later
- * entry overriding only the columns it names. The result is a config whose
- * `tables` all carry concrete table names, in YAML order, so the rest of the
- * run (orchestrator, getTable(), dependency sort, audit) keeps working against
- * literal names.
+ * tables and foreign keys. When several entries match the same table, a
+ * literal key beats a regex whatever the YAML order (an exact name beats a
+ * case-insensitive one); among equals the last one wins for `rows`, except that
+ * only a literal key can lift a regex `skip`. Column rules merge per column in
+ * the same order. The result is a config whose `tables` all carry concrete
+ * table names, in YAML order, so the rest of the run (orchestrator, getTable(),
+ * dependency sort, audit) keeps working against literal names.
  */
 final readonly class TableConfigResolver
 {
+    private const int RANK_REGEX = 0;
+
+    private const int RANK_CASE_INSENSITIVE = 1;
+
+    private const int RANK_EXACT = 2;
+
     public function resolve(CloningConfigData $config, DatabaseSchemaData $schema): CloningConfigData
     {
         $realNames = array_map(
@@ -52,30 +60,32 @@ final readonly class TableConfigResolver
         /** @var array<int, int> $matchedEntries */
         $matchedEntries = [];
 
-        // 1. Expand every real table against the config entries (last match wins).
+        // 1. Expand every real table against the config entries.
         foreach ($realNames as $realName) {
-            /** @var list<int> $matching */
-            $matching = [];
+            /** @var list<array{int, int}> $ranked [rank, entry index] of the matching entries */
+            $ranked = [];
 
             foreach ($config->tables as $index => $entry) {
-                $matches = self::isRegex($entry->tableName)
-                    ? $this->matches($entry->tableName, $realName)
-                    : $resolveName($entry->tableName) === $realName;
+                $rank = $this->rank($entry->tableName, $realName, $resolveName);
 
-                if ($matches) {
-                    $matching[] = $index;
+                if ($rank !== null) {
+                    $ranked[] = [$rank, $index];
                     $matchedEntries[$index] = $index;
                 }
             }
 
-            if ($matching === []) {
+            if ($ranked === []) {
                 continue;
             }
 
-            $resolved[] = [$matching[0], new TableCloningConfigData(
+            // The table sits where it is first mentioned; precedence decides the rest.
+            $firstMention = $ranked[0][1];
+            sort($ranked);
+
+            $resolved[] = [$firstMention, new TableCloningConfigData(
                 tableName: $realName,
-                rows: $config->tables[$matching[count($matching) - 1]]->rows,
-                columns: $this->mergedColumns($config->tables, $matching),
+                rows: $this->winningRows($config->tables, $ranked),
+                columns: $this->mergedColumns($config->tables, $ranked),
             )];
         }
 
@@ -113,20 +123,64 @@ final readonly class TableConfigResolver
     }
 
     /**
-     * The column rules of all entries matching a table, merged per column: a
-     * later entry overrides only the columns it names, so e.g. a trailing
-     * catch-all regex cannot drop an earlier anonymization rule. Columns keep
-     * the order in which they are first mentioned.
+     * How strongly a table key claims a table, or null when it does not match:
+     * a literal key naming the table exactly beats one that matches it only
+     * case-insensitively, and both beat any regex.
+     *
+     * @param  callable(string): string  $resolveName
+     */
+    private function rank(string $key, string $realName, callable $resolveName): ?int
+    {
+        if (self::isRegex($key)) {
+            return $this->matches($key, $realName) ? self::RANK_REGEX : null;
+        }
+
+        if ($resolveName($key) !== $realName) {
+            return null;
+        }
+
+        return $key === $realName ? self::RANK_EXACT : self::RANK_CASE_INSENSITIVE;
+    }
+
+    /**
+     * The rows of the entry with the highest precedence; among entries of equal
+     * rank the last one in YAML order wins. A regex `skip` is the exception: no
+     * other regex can lift it, only a literal entry can, so a broad pattern
+     * further down never copies a table that a narrower pattern excluded.
      *
      * @param  list<TableCloningConfigData>  $entries
-     * @param  list<int>  $matching  Indexes of the entries matching the table, in YAML order
+     * @param  non-empty-list<array{int, int}>  $ranked  [rank, entry index] of the matching entries, in precedence order
+     */
+    private function winningRows(array $entries, array $ranked): TableRowConfigData
+    {
+        [$rank, $index] = $ranked[count($ranked) - 1];
+
+        if ($rank === self::RANK_REGEX) {
+            foreach (array_reverse($ranked) as [, $candidate]) {
+                if ($entries[$candidate]->rows->strategy === 'skip') {
+                    return $entries[$candidate]->rows;
+                }
+            }
+        }
+
+        return $entries[$index]->rows;
+    }
+
+    /**
+     * The column rules of all entries matching a table, merged per column in
+     * precedence order: an entry overrides only the columns it names, so e.g.
+     * a catch-all regex cannot drop an anonymization rule of another entry.
+     * Columns keep the order in which they are first merged.
+     *
+     * @param  list<TableCloningConfigData>  $entries
+     * @param  list<array{int, int}>  $ranked  [rank, entry index] of the matching entries, in precedence order
      * @return list<ColumnCloningConfigData>
      */
-    private function mergedColumns(array $entries, array $matching): array
+    private function mergedColumns(array $entries, array $ranked): array
     {
         $columns = [];
 
-        foreach ($matching as $index) {
+        foreach ($ranked as [, $index]) {
             foreach ($entries[$index]->columns as $column) {
                 $columns[$column->columnName] = $column;
             }

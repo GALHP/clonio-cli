@@ -88,12 +88,14 @@ configure a whole family of tables:
 - A literal key names the table with exactly that name; only when no source
   table has it does it fall back to the single table that matches it
   case-insensitively. An ambiguous fallback matches nothing (*not found*).
-- When several entries match the same table, `rows` come from the **last**
-  entry in file order, including `strategy: skip` (list a broad regex first,
-  then override specific tables below it). Column rules merge per column
-  across all matching entries: a later entry overrides only the columns it
-  names, so a broader entry never drops an earlier anonymization rule
-  (`strategy: keep` lifts one explicitly).
+- When several entries match the same table, the more specific one wins,
+  whatever the file order: an exact literal key beats a case-insensitive
+  literal match, which beats any regex. Among regex keys the last one wins for
+  `rows`, except that a regex `strategy: skip` can only be lifted by a literal
+  key, never by another regex. Tables in the top-level `skip:` list are always
+  skipped. Column rules merge per column across all matching entries in the
+  same order: an entry overrides only the columns it names, so no entry drops
+  another one's anonymization rule (`strategy: keep` lifts one explicitly).
 - A literal key naming an absent source table is still reported *not found*; a
   regex that matches nothing is skipped with a `table_pattern_unmatched`
   warning.
