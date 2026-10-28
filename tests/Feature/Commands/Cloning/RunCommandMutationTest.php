@@ -1089,6 +1089,25 @@ it('expands regex table keys in a dry run', function (): void {
     );
 });
 
+it('stops with a config error when a table pattern fails while matching', function (bool $dryRun): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml("  '/^a/u':\n    rows:\n      strategy: full\n"));
+    $called = false;
+    g1_bind(inspect: fn (ConnectionData $c): DatabaseSchemaData => g1_schema([g1_table("\xff")]), run: function () use (&$called): RunResultData {
+        $called = true;
+
+        return g1_result();
+    });
+
+    [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--ci' => true, '--dry-run' => $dryRun]);
+
+    expect($code)->toBe(2)
+        ->and($out)->toBe("Table pattern '/^a/u' failed on table '\xff': Malformed UTF-8 characters, possibly incorrectly encoded\n")
+        ->and($called)->toBeFalse();
+})->with([
+    'run' => [false],
+    'dry run' => [true],
+]);
+
 it('quotes the table name per source driver when counting rows', function (DatabaseConnectionType $type, string $quoted): void {
     Storage::disk('local')->put('t.yaml', g1_yaml("  users:\n    rows:\n      strategy: full\n"));
     g1_bind(connections: [

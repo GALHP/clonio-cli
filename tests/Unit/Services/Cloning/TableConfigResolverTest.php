@@ -381,3 +381,11 @@ it('applies an exact literal key only to its own table when a case-insensitive r
     expect(array_map(static fn (TableCloningConfigData $t): array => [$t->tableName, $t->rows->strategy], $resolved->tables))
         ->toBe([['Users', 'full'], ['users', 'first']]);
 });
+
+it('fails on a regex that errors while matching instead of treating it as no match', function (array $tables, array $skip): void {
+    expect(fn (): CloningConfigData => (new TableConfigResolver)->resolve(configWith($tables, $skip), schemaWith(["\xff"])))
+        ->toThrow(RuntimeException::class, "Table pattern '/^a/u' failed on table '\xff': Malformed UTF-8 characters, possibly incorrectly encoded");
+})->with([
+    'table key' => [[tableEntry('/^a/u')], []],
+    'skip entry' => [[], ['/^a/u']],
+]);

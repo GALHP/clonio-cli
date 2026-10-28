@@ -366,10 +366,13 @@ class RunCommand extends Command
         // Expand regex table keys against the real source schema. From here on
         // $config->tables carry concrete table names, so the orchestrator, key
         // mapping and audit code all keep working against literal names.
-        $config = $tableResolver->resolve($config, $sourceSchema);
-        // Merge the YAML skip list (regex entries and rows.strategy: skip, now
-        // expanded to concrete names) with CLI --skip-tables, deduplicated.
-        $skipTables = array_values(array_unique(array_merge($skipTables, $config->skipTables))); // @pest-mutate-ignore: UnwrapArrayValues
+        $resolved = $this->resolveTables($tableResolver, $config, $sourceSchema, $skipTables);
+
+        if ($resolved === null) {
+            return ExitCode::ConfigError->value;
+        }
+
+        [$config, $skipTables] = $resolved;
 
         // ─── Phase 5b: Key Mapping Generation ─────────────────────────────────
         $keyRemappingService = null;
@@ -828,7 +831,13 @@ class RunCommand extends Command
 
         // Expand regex table keys like the full run does, so the estimate covers
         // the tables they match instead of counting the patterns as not found.
-        $config = $tableResolver->resolve($config, $schema);
+        $resolved = $this->resolveTables($tableResolver, $config, $schema, []);
+
+        if ($resolved === null) {
+            return ExitCode::ConfigError->value;
+        }
+
+        [$config] = $resolved;
 
         $schemaDiff = null;
 
@@ -898,6 +907,28 @@ class RunCommand extends Command
         }
 
         return ExitCode::Success->value;
+    }
+
+    /**
+     * Resolve the table references of the config against the source schema and
+     * merge its skip list (regex entries and rows.strategy: skip, now expanded
+     * to concrete names) with --skip-tables, deduplicated. Returns null, after
+     * reporting it, when a table pattern fails while matching.
+     *
+     * @param  list<string>  $skipTables
+     * @return array{CloningConfigData, list<string>}|null
+     */
+    private function resolveTables(TableConfigResolver $resolver, CloningConfigData $config, DatabaseSchemaData $schema, array $skipTables): ?array
+    {
+        try {
+            $config = $resolver->resolve($config, $schema);
+        } catch (RuntimeException $runtimeException) {
+            $this->error($runtimeException->getMessage());
+
+            return null;
+        }
+
+        return [$config, array_values(array_unique(array_merge($skipTables, $config->skipTables)))]; // @pest-mutate-ignore: UnwrapArrayValues
     }
 
     private function countRows(ConnectionData $connection, string $tableName): ?int

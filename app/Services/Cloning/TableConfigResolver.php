@@ -13,6 +13,7 @@ use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 
 /**
  * Expands regex table keys in a cloning config against the real source schema.
@@ -57,8 +58,8 @@ final readonly class TableConfigResolver
             $matching = [];
 
             foreach ($config->tables as $index => $entry) {
-                $matches = $this->isRegex($entry->tableName)
-                    ? preg_match($entry->tableName, $realName) === 1
+                $matches = self::isRegex($entry->tableName)
+                    ? $this->matches($entry->tableName, $realName)
                     : $resolveName($entry->tableName) === $realName;
 
                 if ($matches) {
@@ -87,7 +88,7 @@ final readonly class TableConfigResolver
                 continue;
             }
 
-            if ($this->isRegex($entry->tableName)) {
+            if (self::isRegex($entry->tableName)) {
                 Log::warning('table_pattern_unmatched', ['pattern' => $entry->tableName]);
 
                 continue;
@@ -180,8 +181,8 @@ final readonly class TableConfigResolver
         $skip = [];
 
         foreach ($skipList as $entry) {
-            $names = $this->isRegex($entry)
-                ? array_filter($realNames, static fn (string $name): bool => preg_match($entry, $name) === 1)
+            $names = self::isRegex($entry)
+                ? array_filter($realNames, fn (string $name): bool => $this->matches($entry, $name))
                 : [$resolveName($entry)];
 
             foreach ($names as $name) {
@@ -213,8 +214,34 @@ final readonly class TableConfigResolver
         return count($candidates) === 1 ? $candidates[0] : null;
     }
 
-    private function isRegex(string $name): bool
+    /** A table reference wrapped in `/…/` is a regex, any other is a literal name. */
+    public static function isRegex(string $reference): bool
     {
-        return str_starts_with($name, '/');
+        return str_starts_with($reference, '/');
+    }
+
+    /** A regex reference that does not compile; a literal name never is one. */
+    public static function isInvalidPattern(string $reference): bool
+    {
+        return self::isRegex($reference) && @preg_match($reference, '') === false; // @pest-mutate-ignore: EmptyStringToNotEmpty
+    }
+
+    /**
+     * Whether a regex matches a table name. A pattern that fails while matching
+     * (backtrack limit, a table name that is not UTF-8 under the `u` flag) must
+     * not count as "no match": that would leave the table unconfigured or
+     * unskipped without a trace.
+     *
+     * @throws RuntimeException
+     */
+    private function matches(string $pattern, string $name): bool
+    {
+        $result = @preg_match($pattern, $name);
+
+        if ($result === false) {
+            throw new RuntimeException(sprintf("Table pattern '%s' failed on table '%s': %s", $pattern, $name, preg_last_error_msg()));
+        }
+
+        return $result === 1;
     }
 }
