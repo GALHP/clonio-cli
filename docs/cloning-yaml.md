@@ -177,8 +177,10 @@ tables:
   ```
 
 - A literal key that names a table **not** present in the source is still
-  reported as *not found*. A regex that matches no table is skipped with a
-  `table_pattern_unmatched` warning in the log.
+  reported as *not found*. A regex key, or a `skip:` entry, that matches no
+  table prints a warning (also with `--ci`) and logs a
+  `table_reference_unmatched` event, so a typo cannot silently leave tables
+  out or unskipped.
 - Entries of the top-level `skip:` list can be regex too. Literal names there,
   and the table names in key remapping, resolve the same way as literal keys.
 - Tables keep the order in which the file first mentions them.

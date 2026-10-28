@@ -1076,9 +1076,10 @@ it('expands regex table keys in a dry run', function (): void {
 
     [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--dry-run' => true]);
 
-    // Each matched table gets its own estimate; '/^tmp_/' matches nothing and is not "not found".
+    // Each matched table gets its own estimate; '/^tmp_/' matches nothing: a warning, not "not found".
     expect($code)->toBe(0)->and($out)->toBe(
-        "\n  Dry-run: production-db\n\n"
+        "  Warning: table key '/^tmp_/' matches no source table\n"
+        ."\n  Dry-run: production-db\n\n"
         .g1_row('Table', 'Rows (est.)', 'Strategy', 'Transformations')
         .g1_sep()
         .g1_row('logs_2025', '2', 'last 2', '—')

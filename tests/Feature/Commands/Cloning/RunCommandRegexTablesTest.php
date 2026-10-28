@@ -129,3 +129,42 @@ YAML);
         ->and(regexTablesTargetIds('users'))->toBe([1, 2, 3])
         ->and($notes)->toBe(['redacted', 'redacted', 'redacted']); // the later '/^users$/' keeps the column rule
 });
+
+/** Seed the source, point clonio.json at it and an empty target, and write cloning.yaml. */
+function regexTablesSetUp(string $tables): void
+{
+    $source = regexTablesSeedSource();
+    Storage::put('target.sqlite', '');
+    Storage::put('clonio.json', (string) json_encode(['connections' => [
+        'production-db' => ['type' => 'sqlite', 'database' => $source, 'is_production' => true],
+        'staging' => ['type' => 'sqlite', 'database' => Storage::path('target.sqlite'), 'is_production' => false],
+    ]]));
+    Storage::put('cloning.yaml', <<<YAML
+version: "1"
+connection: production-db
+options:
+  chunk_size: 2
+  enforce_column_types: false
+  drop_unknown_tables: false
+  disable_foreign_key_checks: true
+  faker_locale: en_US
+{$tables}
+YAML);
+}
+
+it('warns about a skip entry that matches no source table, also with --ci', function (): void {
+    regexTablesSetUp(<<<'YAML'
+tables:
+  '/^tmp_/':
+    rows:
+      strategy: full
+skip:
+  - '/^tmp_cahce/'
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'cloning.yaml', '--target' => 'staging', '--ci' => true])
+        ->expectsOutputToContain("Warning: skip entry '/^tmp_cahce/' matches no source table")
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(regexTablesTargetIds('tmp_cache'))->toBe([1, 2]);
+});

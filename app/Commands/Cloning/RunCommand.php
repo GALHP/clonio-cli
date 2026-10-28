@@ -912,16 +912,22 @@ class RunCommand extends Command
     /**
      * Resolve the table references of the config against the source schema and
      * merge its skip list (regex entries and rows.strategy: skip, now expanded
-     * to concrete names) with --skip-tables, deduplicated. Returns null, after
-     * reporting it, when a table pattern fails while matching.
+     * to concrete names) with --skip-tables, deduplicated. A reference that
+     * names no source table is always reported, --ci included, as it may leave
+     * tables unskipped. Returns null, after reporting it, when a table pattern
+     * fails while matching.
      *
      * @param  list<string>  $skipTables
      * @return array{CloningConfigData, list<string>}|null
      */
     private function resolveTables(TableConfigResolver $resolver, CloningConfigData $config, DatabaseSchemaData $schema, array $skipTables): ?array
     {
+        $warn = function (string $reference, string $origin): void {
+            $this->line(sprintf("  <comment>Warning: %s '%s' matches no source table</comment>", $origin, $reference));
+        };
+
         try {
-            $config = $resolver->resolve($config, $schema);
+            $config = $resolver->resolve($config, $schema, $warn);
         } catch (RuntimeException $runtimeException) {
             $this->error($runtimeException->getMessage());
 

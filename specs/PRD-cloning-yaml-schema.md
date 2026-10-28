@@ -99,8 +99,8 @@ configure a whole family of tables:
   Column rules of a regex key only apply to the matched tables that have the
   column.
 - A literal key naming an absent source table is still reported *not found*; a
-  regex that matches nothing is skipped with a `table_pattern_unmatched`
-  warning.
+  regex key or `skip:` entry that matches nothing prints a warning (also with
+  `--ci`) and logs `table_reference_unmatched`.
 - Literal names in the `skip:` list and in key remapping (tables and foreign
   keys) resolve the same way as literal keys.
 - Resolved tables keep the order in which the file first mentions them.

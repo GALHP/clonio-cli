@@ -366,6 +366,14 @@ it('lets a later entry override an earlier skip strategy', function (): void {
     expect($resolved->skipTables)->toBe(['logs_2025']);
 });
 
+it('lists a table that is both in the skip list and has strategy skip once', function (): void {
+    $config = configWith([tableEntry('users', 'skip'), tableEntry('orders', 'skip')], skip: ['users']);
+
+    $resolved = (new TableConfigResolver)->resolve($config, schemaWith(['users', 'orders']));
+
+    expect($resolved->skipTables)->toBe(['users', 'orders']);
+});
+
 it('skips a table under its source name only', function (): void {
     $config = configWith([tableEntry('Users', 'skip')], skip: ['Sessions']);
 
@@ -455,16 +463,41 @@ it('applies the column rules of a regex key only to tables that have the column'
         ->and($resolved->getTable('orders')?->columns)->toEqual([columnRule('legacy_note', 'null')]);
 });
 
-it('warns about a regex key that matches no source table', function (): void {
+it('reports regex keys and skip entries that match no source table', function (): void {
     Log::spy();
+    $unmatched = [];
 
     $resolved = (new TableConfigResolver)->resolve(
-        configWith([tableEntry('/^applicaton_/'), tableEntry('ghost'), tableEntry('users')]),
+        configWith([tableEntry('/^applicaton_/'), tableEntry('ghost'), tableEntry('users')], skip: ['/^tmp_cahce/', 'Sesions', 'USERS']),
         schemaWith(['users']),
+        function (string $reference, string $origin) use (&$unmatched): void {
+            $unmatched[] = [$reference, $origin];
+        },
     );
 
-    Log::shouldHaveReceived('warning')->once()->with('table_pattern_unmatched', ['pattern' => '/^applicaton_/']);
-    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['ghost', 'users']);
+    // A literal table key that matches nothing stays a table, reported as not found by the run.
+    expect($unmatched)->toBe([['/^applicaton_/', 'table key'], ['/^tmp_cahce/', 'skip entry'], ['Sesions', 'skip entry']])
+        ->and(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['ghost', 'users'])
+        ->and($resolved->skipTables)->toBe(['Sesions', 'users']);
+    Log::shouldHaveReceived('warning')->times(3);
+    Log::shouldHaveReceived('warning')->with('table_reference_unmatched', ['reference' => '/^applicaton_/', 'origin' => 'table key']);
+    Log::shouldHaveReceived('warning')->with('table_reference_unmatched', ['reference' => 'Sesions', 'origin' => 'skip entry']);
+});
+
+it('resolves table references like table keys and reports those that match nothing', function (): void {
+    $unmatched = [];
+
+    $names = (new TableConfigResolver)->resolveReferences(
+        ['USERS', '/^logs_/', '/^tmp_/', 'ghost', 'logs_2025'],
+        schemaWith(['users', 'logs_2025', 'logs_2026']),
+        '--skip-tables',
+        function (string $reference, string $origin) use (&$unmatched): void {
+            $unmatched[] = [$reference, $origin];
+        },
+    );
+
+    expect($names)->toBe(['users', 'logs_2025', 'logs_2026', 'ghost'])
+        ->and($unmatched)->toBe([['/^tmp_/', '--skip-tables'], ['ghost', '--skip-tables']]);
 });
 
 it('keeps the tables in YAML order, not in schema order', function (): void {

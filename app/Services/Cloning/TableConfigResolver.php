@@ -14,6 +14,7 @@ use App\Data\Cloning\TableRowConfigData;
 use App\Data\Schema\ColumnSchemaData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
+use Closure;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
@@ -43,17 +44,13 @@ final readonly class TableConfigResolver
 
     private const int RANK_EXACT = 2;
 
-    public function resolve(CloningConfigData $config, DatabaseSchemaData $schema): CloningConfigData
+    /**
+     * @param  (callable(string, string): void)|null  $onUnmatched  receives each reference that names no source table, and where it comes from
+     */
+    public function resolve(CloningConfigData $config, DatabaseSchemaData $schema, ?callable $onUnmatched = null): CloningConfigData
     {
-        $realNames = array_map(
-            static fn (TableSchemaData $t): string => $t->name,
-            $schema->tables,
-        );
-        // Each name is looked up once; the scan over all source tables is the costly part.
-        $targets = [];
-        $resolveName = function (string $name) use (&$targets, $realNames): string {
-            return $targets[$name] ??= $this->literalTarget($name, $realNames) ?? $name; // @pest-mutate-ignore: CoalesceEqualToEqual
-        };
+        $realNames = $this->realNames($schema);
+        $resolveName = $this->nameResolver($realNames);
 
         /** @var list<array{int, TableCloningConfigData}> $resolved [first matching entry, table] */
         $resolved = [];
@@ -101,7 +98,7 @@ final readonly class TableConfigResolver
             }
 
             if (self::isRegex($entry->tableName)) {
-                Log::warning('table_pattern_unmatched', ['pattern' => $entry->tableName]);
+                $this->reportUnmatched($entry->tableName, 'table key', $onUnmatched);
 
                 continue;
             }
@@ -120,8 +117,44 @@ final readonly class TableConfigResolver
             options: $config->options,
             tables: $tables,
             keyRemapping: $this->resolveKeyRemapping($config->keyRemapping, $resolveName),
-            skipTables: $this->resolveSkipTables($config->skipTables, $tables, $realNames, $resolveName),
+            skipTables: $this->resolveSkipTables($config->skipTables, $tables, $schema, $onUnmatched),
         );
+    }
+
+    /**
+     * Resolve table references to the source tables they name: a regex expands
+     * to every table it matches, a literal name resolves like a table key. A
+     * reference that names no source table is reported, as a typo would
+     * otherwise leave the tables it meant unskipped without a trace; a literal
+     * one is still kept as written.
+     *
+     * @param  list<string>  $references
+     * @param  string  $origin  Where the references come from, e.g. 'skip entry'
+     * @param  (callable(string, string): void)|null  $onUnmatched  receives each unmatched reference and $origin
+     * @return list<string>
+     */
+    public function resolveReferences(array $references, DatabaseSchemaData $schema, string $origin, ?callable $onUnmatched = null): array
+    {
+        $realNames = $this->realNames($schema);
+        $resolveName = $this->nameResolver($realNames);
+        $names = [];
+
+        foreach ($references as $reference) {
+            $matched = self::isRegex($reference)
+                ? array_filter($realNames, fn (string $name): bool => $this->matches($reference, $name))
+                : array_intersect([$resolveName($reference)], $realNames);
+
+            if ($matched === []) {
+                $this->reportUnmatched($reference, $origin, $onUnmatched);
+                $matched = self::isRegex($reference) ? [] : [$reference];
+            }
+
+            foreach ($matched as $name) {
+                $names[$name] = $name;
+            }
+        }
+
+        return array_values($names);
     }
 
     /**
@@ -234,31 +267,52 @@ final readonly class TableConfigResolver
      *
      * @param  list<string>  $skipList
      * @param  list<TableCloningConfigData>  $tables
-     * @param  list<string>  $realNames
-     * @param  callable(string): string  $resolveName
+     * @param  (callable(string, string): void)|null  $onUnmatched
      * @return list<string>
      */
-    private function resolveSkipTables(array $skipList, array $tables, array $realNames, callable $resolveName): array
+    private function resolveSkipTables(array $skipList, array $tables, DatabaseSchemaData $schema, ?callable $onUnmatched): array
     {
-        $skip = [];
-
-        foreach ($skipList as $entry) {
-            $names = self::isRegex($entry)
-                ? array_filter($realNames, fn (string $name): bool => $this->matches($entry, $name))
-                : [$resolveName($entry)];
-
-            foreach ($names as $name) {
-                $skip[$name] = $name;
-            }
-        }
+        $skip = $this->resolveReferences($skipList, $schema, 'skip entry', $onUnmatched);
 
         foreach ($tables as $table) {
             if ($table->rows->strategy === 'skip') {
-                $skip[$table->tableName] = $table->tableName;
+                $skip[] = $table->tableName;
             }
         }
 
-        return array_values($skip);
+        return array_values(array_unique($skip));
+    }
+
+    /** @param  (callable(string, string): void)|null  $onUnmatched */
+    private function reportUnmatched(string $reference, string $origin, ?callable $onUnmatched): void
+    {
+        Log::warning('table_reference_unmatched', ['reference' => $reference, 'origin' => $origin]);
+
+        if ($onUnmatched !== null) {
+            $onUnmatched($reference, $origin);
+        }
+    }
+
+    /** @return list<string> */
+    private function realNames(DatabaseSchemaData $schema): array
+    {
+        return array_map(static fn (TableSchemaData $t): string => $t->name, $schema->tables);
+    }
+
+    /**
+     * Resolves a literal name to its source table, see literalTarget(). Each
+     * name is looked up once; the scan over all source tables is the costly part.
+     *
+     * @param  list<string>  $realNames
+     * @return Closure(string): string
+     */
+    private function nameResolver(array $realNames): Closure
+    {
+        $targets = [];
+
+        return function (string $name) use (&$targets, $realNames): string {
+            return $targets[$name] ??= $this->literalTarget($name, $realNames) ?? $name; // @pest-mutate-ignore: CoalesceEqualToEqual
+        };
     }
 
     /**
