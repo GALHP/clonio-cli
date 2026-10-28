@@ -10,6 +10,7 @@ use App\Data\Cloning\KeyRemappingForeignKeyData;
 use App\Data\Cloning\KeyRemappingTableData;
 use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Cloning\TableRowConfigData;
+use App\Data\Schema\ColumnSchemaData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
 use App\Enums\ClearMode;
@@ -19,13 +20,17 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * @param  list<string>  $names
+ * @param  array<string, list<string>>  $columns  column names per table
  */
-function schemaWith(array $names): DatabaseSchemaData
+function schemaWith(array $names, array $columns = []): DatabaseSchemaData
 {
     return new DatabaseSchemaData(
         databaseName: 'test',
         tables: array_map(
-            static fn (string $name): TableSchemaData => new TableSchemaData($name, [], []),
+            static fn (string $name): TableSchemaData => new TableSchemaData($name, array_map(
+                static fn (string $column): ColumnSchemaData => new ColumnSchemaData($column, 'varchar', true, null, false),
+                $columns[$name] ?? [],
+            ), []),
             $names,
         ),
     );
@@ -409,7 +414,7 @@ it('lets the column rules of a literal entry override those of a later regex', f
     $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [columnRule('email', 'hash')]);
     $catchAll = new TableCloningConfigData('/.*/', new TableRowConfigData('full', null, null), [columnRule('email', 'fake'), columnRule('iban', 'mask')]);
 
-    $resolved = (new TableConfigResolver)->resolve(configWith([$users, $catchAll]), schemaWith(['users']));
+    $resolved = (new TableConfigResolver)->resolve(configWith([$users, $catchAll]), schemaWith(['users'], ['users' => ['email', 'iban']]));
 
     expect($resolved->getTable('users')?->columns)->toEqual([columnRule('email', 'hash'), columnRule('iban', 'mask')]);
 });
@@ -426,7 +431,7 @@ it('merges column rules per column, a later entry overriding only the columns it
         columnRule('phone', 'keep'),
     ]);
 
-    $resolved = (new TableConfigResolver)->resolve(configWith([$catchAll, $users]), schemaWith(['users']));
+    $resolved = (new TableConfigResolver)->resolve(configWith([$catchAll, $users]), schemaWith(['users'], ['users' => ['name', 'email', 'iban', 'phone']]));
 
     expect($resolved->getTable('users')?->columns)->toEqual([
         columnRule('email', 'hash'),
@@ -434,6 +439,20 @@ it('merges column rules per column, a later entry overriding only the columns it
         columnRule('phone', 'keep'),
         columnRule('name', 'fake'),
     ]);
+});
+
+it('applies the column rules of a regex key only to tables that have the column', function (): void {
+    $catchAll = new TableCloningConfigData('/.*/', new TableRowConfigData('full', null, null), [columnRule('email', 'fake')]);
+    $orders = new TableCloningConfigData('orders', new TableRowConfigData('full', null, null), [columnRule('legacy_note', 'null')]);
+
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([$catchAll, $orders]),
+        schemaWith(['users', 'orders'], ['users' => ['id', 'email'], 'orders' => ['id']]),
+    );
+
+    // A literal key names its table on purpose, so its rules stay as written.
+    expect($resolved->getTable('users')?->columns)->toEqual([columnRule('email', 'fake')])
+        ->and($resolved->getTable('orders')?->columns)->toEqual([columnRule('legacy_note', 'null')]);
 });
 
 it('warns about a regex key that matches no source table', function (): void {

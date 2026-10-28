@@ -96,6 +96,8 @@ configure a whole family of tables:
   skipped. Column rules merge per column across all matching entries in the
   same order: an entry overrides only the columns it names, so no entry drops
   another one's anonymization rule (`strategy: keep` lifts one explicitly).
+  Column rules of a regex key only apply to the matched tables that have the
+  column.
 - A literal key naming an absent source table is still reported *not found*; a
   regex that matches nothing is skipped with a `table_pattern_unmatched`
   warning.

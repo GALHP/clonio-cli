@@ -160,8 +160,9 @@ tables:
 - **Column rules merge per column across all matching entries**, in the same
   order: a more specific entry overrides only the columns it names, and the
   rules of the other entries still apply to all other columns, so no entry can
-  drop an anonymization rule of another. To lift a rule, name the column again
-  with `strategy: keep`:
+  drop an anonymization rule of another. The column rules of a regex only
+  apply to the tables that have the column. To lift a rule, name the column
+  again with `strategy: keep`:
 
   ```yaml
   tables:

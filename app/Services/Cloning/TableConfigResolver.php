@@ -11,6 +11,7 @@ use App\Data\Cloning\KeyRemappingForeignKeyData;
 use App\Data\Cloning\KeyRemappingTableData;
 use App\Data\Cloning\TableCloningConfigData;
 use App\Data\Cloning\TableRowConfigData;
+use App\Data\Schema\ColumnSchemaData;
 use App\Data\Schema\DatabaseSchemaData;
 use App\Data\Schema\TableSchemaData;
 use Illuminate\Support\Facades\Log;
@@ -61,7 +62,8 @@ final readonly class TableConfigResolver
         $matchedEntries = [];
 
         // 1. Expand every real table against the config entries.
-        foreach ($realNames as $realName) {
+        foreach ($schema->tables as $table) {
+            $realName = $table->name;
             /** @var list<array{int, int}> $ranked [rank, entry index] of the matching entries */
             $ranked = [];
 
@@ -85,7 +87,7 @@ final readonly class TableConfigResolver
             $resolved[] = [$firstMention, new TableCloningConfigData(
                 tableName: $realName,
                 rows: $this->winningRows($config->tables, $ranked),
-                columns: $this->mergedColumns($config->tables, $ranked),
+                columns: $this->mergedColumns($config->tables, $ranked, $table),
             )];
         }
 
@@ -170,19 +172,25 @@ final readonly class TableConfigResolver
      * The column rules of all entries matching a table, merged per column in
      * precedence order: an entry overrides only the columns it names, so e.g.
      * a catch-all regex cannot drop an anonymization rule of another entry.
-     * Columns keep the order in which they are first merged.
+     * A regex configures a whole family of tables, so its rules only reach the
+     * tables that have the column; otherwise the audit would report columns as
+     * anonymized that do not exist. Columns keep the order in which they are
+     * first merged.
      *
      * @param  list<TableCloningConfigData>  $entries
      * @param  list<array{int, int}>  $ranked  [rank, entry index] of the matching entries, in precedence order
      * @return list<ColumnCloningConfigData>
      */
-    private function mergedColumns(array $entries, array $ranked): array
+    private function mergedColumns(array $entries, array $ranked, TableSchemaData $table): array
     {
+        $existing = array_map(static fn (ColumnSchemaData $c): string => $c->name, $table->columns);
         $columns = [];
 
-        foreach ($ranked as [, $index]) {
+        foreach ($ranked as [$rank, $index]) {
             foreach ($entries[$index]->columns as $column) {
-                $columns[$column->columnName] = $column;
+                if ($rank !== self::RANK_REGEX || in_array($column->columnName, $existing, true)) {
+                    $columns[$column->columnName] = $column;
+                }
             }
         }
 
