@@ -138,12 +138,9 @@ tables:
   if there is exactly one such table (on PostgreSQL `Users` and `users` can
   both exist; then a key `USERS` matches neither and is reported as *not
   found*).
-- **The last matching entry in the file wins**, including `rows.strategy: skip`.
-  List a broad regex first, then override individual tables with a more
-  specific regex or literal below it. The winning entry replaces the earlier
-  one completely, column rules included; when that drops column rules of an
-  earlier entry (anything but `keep`), the run reports a note for the table.
-  For example:
+- **For `rows`, the last matching entry in the file wins**, including
+  `strategy: skip`. List a broad regex first, then override individual tables
+  with a more specific regex or literal below it:
 
   ```yaml
   tables:
@@ -151,6 +148,21 @@ tables:
       rows: {strategy: last, limit: 1}
     app_logs_critical:           # …but copy this one in full
       rows: {strategy: full}
+  ```
+
+- **Column rules merge per column across all matching entries.** A later entry
+  overrides only the columns it names; the rules of earlier entries for other
+  columns still apply, so a broad regex can never drop an anonymization rule.
+  To lift a rule, name the column again with `strategy: keep`:
+
+  ```yaml
+  tables:
+    users:
+      rows: {strategy: full}
+      columns:
+        email: {strategy: fake, faker_method: safeEmail}
+    '/^.*$/':                    # limits users too, but email stays anonymized
+      rows: {strategy: first, limit: 100}
   ```
 
 - A literal key that names a table **not** present in the source is still

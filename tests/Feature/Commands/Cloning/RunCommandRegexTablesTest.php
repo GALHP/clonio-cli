@@ -84,7 +84,7 @@ YAML);
         ->and(regexTablesTargetIds('tmp_cache'))->toBe([]); // skipped by the regex in skip:
 });
 
-it('lets a later entry override a regex skip and notes overridden column rules', function (): void {
+it('lets a later entry override a regex skip and keeps earlier column rules', function (): void {
     $source = regexTablesSeedSource();
     Storage::put('target.sqlite', '');
     Storage::put('clonio.json', (string) json_encode(['connections' => [
@@ -106,7 +106,8 @@ tables:
       strategy: full
     columns:
       note:
-        strategy: "null"
+        strategy: static
+        value: redacted
   '/^logs_/':
     rows:
       strategy: skip
@@ -119,10 +120,12 @@ tables:
 YAML);
 
     $this->artisan('cloning:run', ['file' => 'override.cloning.yaml', '--target' => 'staging'])
-        ->expectsOutputToContain("Note: users: Column rules of 'users' are overridden by the later entry '/^users$/' and not applied: note")
         ->assertExitCode(ExitCode::Success->value);
+
+    $notes = (new PDO('sqlite:'.Storage::path('target.sqlite')))->query('SELECT note FROM users ORDER BY id')->fetchAll(PDO::FETCH_COLUMN);
 
     expect(regexTablesTargetIds('logs_2025'))->toBe([])
         ->and(regexTablesTargetIds('logs_critical'))->toBe([1, 2, 3, 4, 5])
-        ->and(regexTablesTargetIds('users'))->toBe([1, 2, 3]);
+        ->and(regexTablesTargetIds('users'))->toBe([1, 2, 3])
+        ->and($notes)->toBe(['redacted', 'redacted', 'redacted']); // the later '/^users$/' keeps the column rule
 });

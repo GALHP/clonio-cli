@@ -1348,16 +1348,3 @@ it('fails the table instead of looping when the cursor does not move', function 
     'transfer' => [null],
     'dump' => fn (): SqlDumpService => tap(g3_orch_dump_sink(), static fn ($sink) => $sink->shouldReceive('writeRows')),
 ]);
-
-it('reports config notes of a table with its result', function (): void {
-    g3_orch_db([[(object) ['id' => 1]]]);
-
-    [$result] = g3_orch_run(
-        g3_orch_make(),
-        g3_orch_config([new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [], notes: ['overridden rules'])]),
-        new DatabaseSchemaData('src', [g3_orch_schema_table('users')]),
-    );
-
-    expect($result->tables[0]->notes)->toBe(['overridden rules'])
-        ->and(g3_orch_events('table_column_note'))->toBe([['level' => 'warning', 'event' => 'table_column_note', 'table' => 'users', 'note' => 'overridden rules']]);
-});

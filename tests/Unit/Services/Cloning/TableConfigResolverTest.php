@@ -310,20 +310,38 @@ it('resolves key remapping tables and foreign keys like table keys', function ()
     ]);
 });
 
-it('notes column rules that a later entry overrides', function (): void {
-    $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [
-        columnRule('email', 'fake'),
-        columnRule('iban', 'mask'),
-        columnRule('name', 'keep'),
-        columnRule('phone', 'null'),
-    ]);
-    $catchAll = new TableCloningConfigData('/.*/', new TableRowConfigData('last', 100, null), [columnRule('phone', 'hash')]);
+it('keeps the column rules of an earlier entry when a broader regex follows', function (): void {
+    $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [columnRule('email', 'fake')]);
+    $catchAll = tableEntry('/^.*$/', 'first', 100);
 
     $resolved = (new TableConfigResolver)->resolve(configWith([$users, $catchAll]), schemaWith(['users', 'orders']));
 
-    expect($resolved->getTable('users')?->notes)->toBe([
-        "Column rules of 'users' are overridden by the later entry '/.*/' and not applied: email, iban",
-    ])->and($resolved->getTable('orders')?->notes)->toBe([]);
+    expect($resolved->getTable('users')?->columns)->toEqual([columnRule('email', 'fake')])
+        ->and($resolved->getTable('users')?->rows)->toEqual($catchAll->rows)
+        ->and($resolved->getTable('orders')?->columns)->toBe([])
+        ->and($resolved->getTable('orders')?->rows)->toEqual($catchAll->rows);
+});
+
+it('merges column rules per column, a later entry overriding only the columns it names', function (): void {
+    $catchAll = new TableCloningConfigData('/.*/', new TableRowConfigData('full', null, null), [
+        columnRule('email', 'fake'),
+        columnRule('iban', 'mask'),
+        columnRule('phone', 'null'),
+    ]);
+    $users = new TableCloningConfigData('users', new TableRowConfigData('full', null, null), [
+        columnRule('name', 'fake'),
+        columnRule('email', 'hash'),
+        columnRule('phone', 'keep'),
+    ]);
+
+    $resolved = (new TableConfigResolver)->resolve(configWith([$catchAll, $users]), schemaWith(['users']));
+
+    expect($resolved->getTable('users')?->columns)->toEqual([
+        columnRule('email', 'hash'),
+        columnRule('iban', 'mask'),
+        columnRule('phone', 'keep'),
+        columnRule('name', 'fake'),
+    ]);
 });
 
 it('warns about a regex key that matches no source table', function (): void {

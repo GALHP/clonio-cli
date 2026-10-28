@@ -25,9 +25,11 @@ use Illuminate\Support\Facades\Log;
  * (none if several do). The same name resolution applies to every table
  * reference in the config: table keys, the `skip:` list and the key remapping
  * tables and foreign keys. When several entries match the same table, the last
- * one in YAML order wins. The result is a config whose `tables` all carry
- * concrete table names, in YAML order, so the rest of the run (orchestrator,
- * getTable(), dependency sort, audit) keeps working against literal names.
+ * one in YAML order wins for `rows`; column rules merge per column, a later
+ * entry overriding only the columns it names. The result is a config whose
+ * `tables` all carry concrete table names, in YAML order, so the rest of the
+ * run (orchestrator, getTable(), dependency sort, audit) keeps working against
+ * literal names.
  */
 final readonly class TableConfigResolver
 {
@@ -69,12 +71,10 @@ final readonly class TableConfigResolver
                 continue;
             }
 
-            $winner = $config->tables[$matching[count($matching) - 1]];
             $resolved[] = [$matching[0], new TableCloningConfigData(
                 tableName: $realName,
-                rows: $winner->rows,
-                columns: $winner->columns,
-                notes: $this->overriddenColumnNotes($config->tables, $matching),
+                rows: $config->tables[$matching[count($matching) - 1]]->rows,
+                columns: $this->mergedColumns($config->tables, $matching),
             )];
         }
 
@@ -112,40 +112,26 @@ final readonly class TableConfigResolver
     }
 
     /**
-     * Notes for a table whose winning entry drops column rules of an earlier
-     * matching entry, e.g. a trailing catch-all regex that would otherwise copy
-     * columns unanonymized without a word.
+     * The column rules of all entries matching a table, merged per column: a
+     * later entry overrides only the columns it names, so e.g. a trailing
+     * catch-all regex cannot drop an earlier anonymization rule. Columns keep
+     * the order in which they are first mentioned.
      *
      * @param  list<TableCloningConfigData>  $entries
      * @param  list<int>  $matching  Indexes of the entries matching the table, in YAML order
-     * @return list<string>
+     * @return list<ColumnCloningConfigData>
      */
-    private function overriddenColumnNotes(array $entries, array $matching): array
+    private function mergedColumns(array $entries, array $matching): array
     {
-        $winner = $entries[$matching[count($matching) - 1]];
-        $notes = [];
+        $columns = [];
 
-        // The winner itself drops nothing, so it needs no special case here.
         foreach ($matching as $index) {
-            $dropped = array_map(
-                static fn (ColumnCloningConfigData $c): string => $c->columnName,
-                array_filter(
-                    $entries[$index]->columns,
-                    static fn (ColumnCloningConfigData $c): bool => $c->strategy !== 'keep' && ! $winner->getColumn($c->columnName) instanceof ColumnCloningConfigData,
-                ),
-            );
-
-            if ($dropped !== []) {
-                $notes[] = sprintf(
-                    "Column rules of '%s' are overridden by the later entry '%s' and not applied: %s",
-                    $entries[$index]->tableName,
-                    $winner->tableName,
-                    implode(', ', $dropped),
-                );
+            foreach ($entries[$index]->columns as $column) {
+                $columns[$column->columnName] = $column;
             }
         }
 
-        return $notes;
+        return array_values($columns);
     }
 
     /**
