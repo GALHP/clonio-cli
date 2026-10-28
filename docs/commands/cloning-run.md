@@ -482,7 +482,7 @@ Prints the run summary. Tables not found in the source are always listed, regard
 
 ### `--skip-tables` and `--only-tables`
 
-Both flags accept a comma-separated list of exact table names. Glob patterns and regex are not supported. Spaces around commas are trimmed.
+Both flags accept a comma-separated list of table names. Spaces around commas are trimmed. A name matches the table with exactly that name; only when no source table has it does it match the one table that differs in case only, like a literal key in the YAML (see [Matching table names with regex](../cloning-yaml.md#matching-table-names-with-regex)). A name that matches no source table prints a warning, also with `--ci`; with `--only-tables` such a typo then transfers nothing.
 
 ```bash
 # Skip two tables
@@ -491,6 +491,8 @@ clonio cloning:run prod.cloning.yaml --target staging --skip-tables=audit_logs,s
 # Transfer only these tables
 clonio cloning:run prod.cloning.yaml --target staging --only-tables=users,orders
 ```
+
+Regex is not accepted on the command line: a value wrapped in `/…/` is a `ValidationError (4)`, raised before any connection is opened. Put patterns in the YAML [`skip:` list](#skipping-tables-in-yaml) instead.
 
 Using both flags together is a `ValidationError (4)`.
 

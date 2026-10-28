@@ -168,3 +168,44 @@ YAML);
 
     expect(regexTablesTargetIds('tmp_cache'))->toBe([1, 2]);
 });
+
+it('resolves --skip-tables names like literal table keys', function (): void {
+    regexTablesSetUp(<<<'YAML'
+tables:
+  Users:
+    rows:
+      strategy: full
+  logs_critical:
+    rows:
+      strategy: full
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'cloning.yaml', '--target' => 'staging', '--ci' => true, '--skip-tables' => 'USERS,ghost'])
+        ->expectsOutputToContain("Warning: --skip-tables 'ghost' matches no source table")
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(regexTablesTargetIds('users'))->toBe([])
+        ->and(regexTablesTargetIds('logs_critical'))->toBe([1, 2, 3, 4, 5]);
+});
+
+it('resolves --only-tables names like literal table keys, copying nothing for a typo', function (string $only, array $copied): void {
+    regexTablesSetUp(<<<'YAML'
+tables:
+  users:
+    rows:
+      strategy: full
+  '/^logs_/':
+    rows:
+      strategy: full
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'cloning.yaml', '--target' => 'staging', '--ci' => true, '--only-tables' => $only])
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(array_keys(array_filter(
+        array_map(regexTablesTargetIds(...), array_combine(['users', 'logs_2025', 'logs_2026', 'logs_critical'], ['users', 'logs_2025', 'logs_2026', 'logs_critical'])),
+    )))->toBe($copied);
+})->with([
+    'case-insensitive name' => ['Users,LOGS_2025', ['users', 'logs_2025']],
+    'typo' => ['ussers', []],
+]);

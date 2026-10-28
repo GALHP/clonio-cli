@@ -111,7 +111,8 @@ configure a whole family of tables:
 - Key remapping needs literal table names: a `strategy: remapping` column under
   a regex key and a regex table in key remapping (`key_remapping.tables[].table`
   or any `foreign_keys[].table`) fail validation. The `--skip-tables` /
-  `--only-tables` flags remain literal-only.
+  `--only-tables` flags remain literal-only: their names resolve like literal
+  keys, and a `/…/` value is rejected before connecting.
 
 ```yaml
 tables:

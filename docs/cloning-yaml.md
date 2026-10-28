@@ -188,7 +188,8 @@ tables:
 > **Note.** Key remapping needs literal table names: a `strategy: remapping`
 > column under a regex key, or a regex `table` or `foreign_keys[].table` in key
 > remapping, is rejected when the file is validated. The `--skip-tables` /
-> `--only-tables` flags also take literal names only.
+> `--only-tables` flags of `cloning:run` take table names only; they resolve
+> like literal keys.
 
 ### `rows`
 

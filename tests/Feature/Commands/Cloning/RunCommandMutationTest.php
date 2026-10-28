@@ -281,6 +281,22 @@ it('rejects --skip-tables combined with --only-tables before running', function 
         ->and($called)->toBeFalse();
 });
 
+it('rejects a regex in a table option before connecting', function (string $option): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $called = false;
+    g1_bind(run: function () use (&$called): RunResultData {
+        $called = true;
+
+        return g1_result();
+    });
+
+    [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--ci' => true, $option => 'users,/^tmp_/']);
+
+    expect($code)->toBe(4)
+        ->and($out)->toBe($option.": '/^tmp_/' is a regex; the option takes table names only, put regex in the YAML skip: list\n")
+        ->and($called)->toBeFalse();
+})->with(['--skip-tables', '--only-tables']);
+
 it('casts non-string table option values to strings', function (string $option, int $index): void {
     Storage::disk('local')->put('t.yaml', g1_yaml());
     $args = null;
@@ -1329,7 +1345,7 @@ it('patches the column and prints the re-run command after interactive confirmat
 
 it('suggests --no-memory-limit with the full original command line', function (): void {
     Storage::disk('local')->put('t.yaml', g1_remap_yaml());
-    g1_bind();
+    g1_bind(inspect: fn (ConnectionData $c): DatabaseSchemaData => g1_schema([g1_table('users'), g1_table('a'), g1_table('b')]));
     $opened = 0;
     $connector = Mockery::mock(DatabaseConnectionService::class);
     $connector->shouldReceive('open')->andReturnUsing(function () use (&$opened): string {
@@ -1363,7 +1379,7 @@ it('suggests --no-memory-limit with the full original command line', function ()
 
 it('omits empty value options from the memory hint', function (): void {
     Storage::disk('local')->put('t.yaml', g1_remap_yaml());
-    g1_bind();
+    g1_bind(inspect: fn (ConnectionData $c): DatabaseSchemaData => g1_schema([g1_table('users'), g1_table('c')]));
     $remapping = Mockery::mock(KeyRemappingService::class);
     $remapping->shouldReceive('generateMappings')->andThrow(new RuntimeException('Out of memory'));
     app()->instance(KeyRemappingService::class, $remapping);
