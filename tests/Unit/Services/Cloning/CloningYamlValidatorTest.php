@@ -1185,6 +1185,7 @@ it('validates the entries of the skip list', function (array $skip, array $error
     'literal and regex' => [['cache', '/^tmp_/'], []],
     'invalid regex' => [['cache', '/^tmp_(/'], ["skip[1]: invalid regex pattern '/^tmp_(/'"]],
     'invalid regex with a flag' => [['/^tmp_(/i'], ["skip[0]: invalid regex pattern '/^tmp_(/i'"]],
+    'numeric table name' => [['cache', 2024], []],
     'not a string' => [[['nested']], ['skip[0]: must be a table name string']],
 ]);
 

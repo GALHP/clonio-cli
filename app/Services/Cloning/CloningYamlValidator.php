@@ -100,6 +100,9 @@ class CloningYamlValidator
             $errors[] = "Field 'skip' must be a list of table name strings";
         } elseif (is_array($skip)) {
             foreach ($skip as $index => $entry) {
+                // An unquoted numeric table name parses as int; it names a table like a numeric key.
+                $entry = is_int($entry) ? (string) $entry : $entry;
+
                 if (! is_string($entry)) {
                     $errors[] = sprintf('skip[%s]: must be a table name string', $index);
                 } elseif (TableConfigResolver::isInvalidPattern($entry)) {

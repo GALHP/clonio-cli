@@ -120,6 +120,9 @@ class CloningYamlLoader
         $skipRaw = $data['skip'] ?? null;
         if (is_array($skipRaw)) {
             foreach ($skipRaw as $entry) {
+                // An unquoted numeric table name parses as int, like a numeric table key.
+                $entry = is_int($entry) ? (string) $entry : $entry;
+
                 if (is_string($entry) && $entry !== '') {
                     $skipTables[] = $entry;
                 }

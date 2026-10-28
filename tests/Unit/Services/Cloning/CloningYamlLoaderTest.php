@@ -661,7 +661,7 @@ YAML;
     expect($config->skipTables)->toBe([]);
 });
 
-it('ignores non-string entries in the skip list', function (): void {
+it('casts numeric skip entries to table names and ignores empty ones', function (): void {
     Storage::fake('local');
 
     $yaml = <<<'YAML'
@@ -687,7 +687,7 @@ YAML;
 
     $config = (new CloningYamlLoader)->load('test.cloning.yaml');
 
-    expect($config->skipTables)->toBe(['audit_logs']);
+    expect($config->skipTables)->toBe(['audit_logs', '42']);
 });
 
 it('keeps rows.strategy skip on the table and out of skipTables', function (): void {
