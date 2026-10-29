@@ -108,9 +108,12 @@ class DependencyResolver
     }
 
     /**
-     * The tables a run leaves out, for the run itself and for --dry-run alike:
-     * by flag (see excludedTables()) and, cascading from those, every
-     * configured table with a foreign key dependency on one of them.
+     * The configured tables a run leaves out, for the run itself and for
+     * --dry-run alike: by flag (see excludedTables()) and, cascading from every
+     * excluded table, the tables with a foreign key dependency on one of them.
+     * A skip entry for a table outside the config still cascades, but is not
+     * listed: the run never meant to copy that table, and a regex skip entry
+     * would otherwise list every source table it matches.
      *
      * @param  list<string>  $tableNames  The configured tables
      * @param  list<string>  $skipTables
@@ -119,9 +122,12 @@ class DependencyResolver
      */
     public function exclusions(DatabaseSchemaData $schema, array $tableNames, array $skipTables, array $onlyTables): array
     {
-        $byFlag = self::excludedTables($tableNames, $skipTables, $onlyTables);
+        $excluded = self::excludedTables($tableNames, $skipTables, $onlyTables);
 
-        return [$byFlag, $this->computeCascadeExclusions($schema, $byFlag, $tableNames)];
+        return [
+            array_values(array_intersect($excluded, $tableNames)),
+            $this->computeCascadeExclusions($schema, $excluded, $tableNames),
+        ];
     }
 
     /**

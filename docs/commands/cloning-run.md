@@ -541,6 +541,8 @@ tables:
 
 YAML-level skips and `--skip-tables` are **additive**: both lists are merged at runtime. The same cascade rules apply — tables with FK dependencies on a skipped table are also skipped automatically.
 
+Only tables configured under `tables:` are reported as skipped, in the summary and in the audit log. A skip entry for a table outside `tables:` (e.g. a regex in `skip:` that matches many source tables) is not listed, as the run never copies that table anyway, but the tables with FK dependencies on it are still skipped.
+
 ## Table Run Statuses
 
 Each table in a run is recorded with one of the following statuses in the audit and process logs:
@@ -548,7 +550,7 @@ Each table in a run is recorded with one of the following statuses in the audit 
 | Status | Meaning |
 |--------|---------|
 | `transferred` | Table was transferred successfully |
-| `skipped_by_flag` | Table was excluded via `--skip-tables` or `--only-tables` |
+| `skipped_by_flag` | Configured table was excluded via `--skip-tables`, `--only-tables` or a YAML skip |
 | `skipped_by_cascade` | Table was excluded because it has a FK dependency on a skipped table |
 | `skipped_by_schema_failure` | Table's schema could not be created in the target database (native DDL and fallback both failed); the data transfer step was skipped. Overall `success` is `false`. |
 | `not_found` | Table is listed in the YAML but does not exist in the source database |

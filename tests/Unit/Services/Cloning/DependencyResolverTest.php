@@ -204,3 +204,9 @@ it('returns the tables excluded by flag and those cascaded from them', function 
 
     expect($exclusions)->toBe([['users'], ['orders', 'order_items']]);
 });
+
+it('lists only configured tables as excluded by flag, but cascades from every skipped table', function (): void {
+    $exclusions = (new DependencyResolver)->exclusions(makeSchemaForSort(), ['orders', 'order_items', 'ghost'], ['tmp', 'users', 'ghost'], []);
+
+    expect($exclusions)->toBe([['ghost'], ['orders', 'order_items']]);
+});

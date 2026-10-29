@@ -252,6 +252,22 @@ it('records tables skipped via --skip with zero counts and a log event', functio
         ]);
 });
 
+it('records no result for a skipped table that is not configured', function (): void {
+    g3_orch_db();
+
+    [$result] = g3_orch_run(
+        g3_orch_make(),
+        g3_orch_config([g3_orch_table('a')]),
+        new DatabaseSchemaData('src', [g3_orch_schema_table('a'), g3_orch_schema_table('tmp')]),
+        skip: ['tmp'],
+    );
+
+    expect($result->tables)->toHaveCount(1)
+        ->and($result->tables[0]->tableName)->toBe('a')
+        ->and($result->tables[0]->status)->toBe(TableRunStatus::Transferred)
+        ->and(g3_orch_events('table_skipped_by_flag'))->toBe([]);
+});
+
 it('records tables left out by --only with the only-filter reason', function (): void {
     g3_orch_db();
 

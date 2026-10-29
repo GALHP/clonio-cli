@@ -187,6 +187,8 @@ Tables excluded by flag or cascade:
 - Appear in the audit log as `skipped_by_flag` or `skipped_by_cascade`.
 - Are not counted in transferred totals but are shown in the summary.
 
+Only tables configured under `tables:` are reported as `skipped_by_flag`. A skip entry for a table outside the config is not listed (the run never copies it), but tables with an FK dependency on it are still cascaded.
+
 ---
 
 ## 6. Not-Found Tables

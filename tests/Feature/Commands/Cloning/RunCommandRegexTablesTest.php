@@ -234,6 +234,28 @@ YAML);
         ->and(regexTablesTargetIds('logs_2025'))->toBe([]);
 });
 
+it('counts only configured tables when a regex skip entry matches unconfigured ones', function (): void {
+    regexTablesSetUp(<<<'YAML'
+tables:
+  users:
+    rows:
+      strategy: full
+  logs_critical:
+    rows:
+      strategy: full
+skip:
+  - '/^logs_/'
+  - '/^tmp_/'
+YAML);
+
+    $this->artisan('cloning:run', ['file' => 'cloning.yaml', '--target' => 'staging'])
+        ->expectsOutputToContain('Tables: 1/2')
+        ->assertExitCode(ExitCode::Success->value);
+
+    expect(regexTablesTargetIds('users'))->toBe([1, 2, 3])
+        ->and(regexTablesTargetIds('logs_critical'))->toBe([]);
+});
+
 it('reports a mistyped skip key as not found, also with --ci', function (): void {
     regexTablesSetUp(<<<'YAML'
 tables:
