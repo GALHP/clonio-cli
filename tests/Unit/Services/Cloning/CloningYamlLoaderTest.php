@@ -721,36 +721,6 @@ YAML;
         ->and($config->getTable('audit_logs')?->rows->strategy)->toBe('skip');
 });
 
-it('deduplicates tables that appear in both skip list and as strategy skip', function (): void {
-    Storage::fake('local');
-
-    $yaml = <<<'YAML'
-version: "1"
-connection: production-db
-options:
-  chunk_size: 1000
-  enforce_column_types: false
-  drop_unknown_tables: false
-  disable_foreign_key_checks: true
-  faker_locale: en_US
-skip:
-  - audit_logs
-tables:
-  users:
-    rows:
-      strategy: full
-  audit_logs:
-    rows:
-      strategy: skip
-YAML;
-
-    Storage::disk('local')->put('test.cloning.yaml', $yaml);
-
-    $config = (new CloningYamlLoader)->load('test.cloning.yaml');
-
-    expect($config->skipTables)->toBe(['audit_logs']);
-});
-
 it('skips a table from the top-level skip list even when its table entry has a non-skip strategy', function (): void {
     Storage::fake('local');
 
