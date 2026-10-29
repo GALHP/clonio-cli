@@ -59,9 +59,20 @@ final readonly class TableConfigResolver
         /** @var array<int, int> $matchedEntries */
         $matchedEntries = [];
 
-        // 1. Expand every real table against the config entries.
+        /** @var array<string, true> $seen */
+        $seen = [];
+
+        // 1. Expand every real table against the config entries. A name that
+        //    several schemas share (SQL Server lists all of them) is one table,
+        //    configured once, as getTable() finds its first entry only.
         foreach ($schema->tables as $table) {
             $realName = $table->name;
+
+            if (isset($seen[$realName])) {
+                continue;
+            }
+
+            $seen[$realName] = true; // @pest-mutate-ignore: TrueToFalse
             /** @var list<array{int, int}> $ranked [rank, entry index] of the matching entries */
             $ranked = [];
 
@@ -349,10 +360,15 @@ final readonly class TableConfigResolver
         }
     }
 
-    /** @return list<string> */
+    /**
+     * The source table names, each once: SQL Server lists a name once per
+     * schema, which would also make its case-insensitive fallback ambiguous.
+     *
+     * @return list<string>
+     */
     private function realNames(DatabaseSchemaData $schema): array
     {
-        return array_map(static fn (TableSchemaData $t): string => $t->name, $schema->tables);
+        return array_values(array_unique(array_map(static fn (TableSchemaData $t): string => $t->name, $schema->tables))); // @pest-mutate-ignore: UnwrapArrayValues
     }
 
     /**

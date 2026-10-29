@@ -393,6 +393,16 @@ it('lists a table that is both in the skip list and has strategy skip once', fun
     expect($resolved->skipTables)->toBe(['users', 'orders']);
 });
 
+it('configures a table that several schemas share once', function (string $key): void {
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([tableEntry($key, 'first', 10), tableEntry('/^orders$/')], skip: ['Users']),
+        schemaWith(['users', 'users', 'orders']),
+    );
+
+    expect(array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $resolved->tables))->toBe(['users', 'orders'])
+        ->and($resolved->skipTables)->toBe(['users']);
+})->with(['literal' => 'users', 'regex' => '/^users$/', 'case-insensitive literal' => 'USERS']);
+
 it('leaves a skip key that names no source table to be reported as not found', function (): void {
     $config = configWith([tableEntry('audti_logs', 'skip'), tableEntry('/.*/', 'full')]);
 
