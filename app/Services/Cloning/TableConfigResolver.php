@@ -118,7 +118,7 @@ final readonly class TableConfigResolver
             options: $config->options,
             tables: $tables,
             keyRemapping: $this->resolveKeyRemapping($config->keyRemapping, $resolveName),
-            skipTables: $this->resolveSkipTables($config->skipTables, $tables, $schema, $onUnmatched),
+            skipTables: $this->resolveSkipTables($config->skipTables, $tables, $realNames, $resolveName, $onUnmatched),
         );
     }
 
@@ -137,13 +137,28 @@ final readonly class TableConfigResolver
     public function resolveReferences(array $references, DatabaseSchemaData $schema, string $origin, ?callable $onUnmatched = null): array
     {
         $realNames = $this->realNames($schema);
-        $resolveName = $this->nameResolver($realNames);
+
+        return $this->expandReferences($references, $realNames, $this->nameResolver($realNames), $origin, $onUnmatched);
+    }
+
+    /**
+     * @param  list<string>  $references
+     * @param  list<string>  $realNames
+     * @param  callable(string): string  $resolveName
+     * @param  (callable(string, string): void)|null  $onUnmatched
+     * @return list<string>
+     */
+    private function expandReferences(array $references, array $realNames, callable $resolveName, string $origin, ?callable $onUnmatched): array
+    {
         $names = [];
 
         foreach ($references as $reference) {
-            $matched = self::isRegex($reference)
-                ? array_filter($realNames, fn (string $name): bool => $this->matches($reference, $name))
-                : array_intersect([$resolveName($reference)], $realNames);
+            if (self::isRegex($reference)) {
+                $matched = array_filter($realNames, fn (string $name): bool => $this->matches($reference, $name));
+            } else {
+                $name = $resolveName($reference);
+                $matched = in_array($name, $realNames, true) ? [$name] : [];
+            }
 
             if ($matched === []) {
                 $this->reportUnmatched($reference, $origin, $onUnmatched);
@@ -305,15 +320,18 @@ final readonly class TableConfigResolver
      *
      * @param  list<string>  $skipList
      * @param  list<TableCloningConfigData>  $tables
+     * @param  list<string>  $realNames
+     * @param  callable(string): string  $resolveName
      * @param  (callable(string, string): void)|null  $onUnmatched
      * @return list<string>
      */
-    private function resolveSkipTables(array $skipList, array $tables, DatabaseSchemaData $schema, ?callable $onUnmatched): array
+    private function resolveSkipTables(array $skipList, array $tables, array $realNames, callable $resolveName, ?callable $onUnmatched): array
     {
-        $skip = $this->resolveReferences($skipList, $schema, 'skip entry', $onUnmatched);
+        $skip = $this->expandReferences($skipList, $realNames, $resolveName, 'skip entry', $onUnmatched);
+        $known = array_flip($realNames);
 
         foreach ($tables as $table) {
-            if ($table->rows->strategy === 'skip' && $schema->hasTable($table->tableName)) {
+            if ($table->rows->strategy === 'skip' && isset($known[$table->tableName])) {
                 $skip[] = $table->tableName;
             }
         }
