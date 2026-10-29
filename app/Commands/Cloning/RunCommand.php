@@ -114,6 +114,7 @@ class RunCommand extends Command
         CloningRunOrchestrator $orchestrator,
         AuditBuffer $auditBuffer,
         TableConfigResolver $tableResolver,
+        DependencyResolver $dependencyResolver,
     ): int {
         $ci = (bool) $this->option('ci');
         $verbosity = $this->getOutput()->getVerbosity();
@@ -362,7 +363,7 @@ class RunCommand extends Command
 
         // ─── Phase 3: Dry-run ──────────────────────────────────────────────────
         if ((bool) $this->option('dry-run')) { // @pest-mutate-ignore: RemoveBooleanCast
-            return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $tableResolver, $skipTables, $onlyTables, $ci);
+            return $this->runDryRun($config, $sourceConnection, $targetConnection, $inspector, $tableResolver, $dependencyResolver, $skipTables, $onlyTables, $ci);
         }
 
         // ─── Phase 4-6: Full Run ───────────────────────────────────────────────
@@ -837,6 +838,7 @@ class RunCommand extends Command
         ConnectionData $target,
         SchemaInspector $inspector,
         TableConfigResolver $tableResolver,
+        DependencyResolver $dependencyResolver,
         array $skipTables,
         array $onlyTables,
         bool $ci,
@@ -862,8 +864,8 @@ class RunCommand extends Command
         // Leave out the tables the run would skip, by flag or by cascade, the
         // way the orchestrator does; they need no row count either.
         $tableNames = array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $config->tables);
-        $excluded = DependencyResolver::excludedTables($tableNames, $skipTables, $onlyTables);
-        $excluded = [...$excluded, ...resolve(DependencyResolver::class)->computeCascadeExclusions($schema, $excluded, $tableNames)];
+        [$byFlag, $byCascade] = $dependencyResolver->exclusions($schema, $tableNames, $skipTables, $onlyTables);
+        $excluded = [...$byFlag, ...$byCascade];
 
         $schemaDiff = null;
 

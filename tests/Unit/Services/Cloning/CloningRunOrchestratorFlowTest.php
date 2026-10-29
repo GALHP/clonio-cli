@@ -103,7 +103,7 @@ function g3_orch_make(
     }
 
     if (! $resolver instanceof DependencyResolver) {
-        $resolver = Mockery::mock(DependencyResolver::class);
+        $resolver = Mockery::mock(DependencyResolver::class)->makePartial();
         $resolver->shouldReceive('computeCascadeExclusions')->andReturn([]);
         $resolver->shouldReceive('sort')->andReturnUsing(static fn ($schema, array $tables): array => $tables);
     }
@@ -210,7 +210,7 @@ function g3_orch_events(string $event): array
 
 function g3_orch_resolver(array $cascade = [], ?Closure $sort = null): DependencyResolver
 {
-    $resolver = Mockery::mock(DependencyResolver::class);
+    $resolver = Mockery::mock(DependencyResolver::class)->makePartial();
     $resolver->shouldReceive('computeCascadeExclusions')->andReturn($cascade);
     $resolver->shouldReceive('sort')->andReturnUsing($sort ?? static fn ($schema, array $tables): array => $tables);
 
@@ -779,7 +779,7 @@ it('writes no rows to a dump for a schema-only table', function (): void {
 
 it('passes a re-indexed list of --only exclusions to the cascade resolver', function (): void {
     $received = null;
-    $resolver = Mockery::mock(DependencyResolver::class);
+    $resolver = Mockery::mock(DependencyResolver::class)->makePartial();
     $resolver->shouldReceive('computeCascadeExclusions')->andReturnUsing(static function ($schema, array $excluded) use (&$received): array {
         $received = $excluded;
 

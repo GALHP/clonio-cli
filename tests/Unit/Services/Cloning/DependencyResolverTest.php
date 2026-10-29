@@ -198,3 +198,9 @@ it('excludes the tables to skip, and with an only list every table outside it', 
     'duplicate skip' => [['b', 'b', 'c'], [], ['b', 'c']],
     'nothing' => [[], [], []],
 ]);
+
+it('returns the tables excluded by flag and those cascaded from them', function (): void {
+    $exclusions = (new DependencyResolver)->exclusions(makeSchemaForSort(), ['users', 'orders', 'order_items'], ['users'], []);
+
+    expect($exclusions)->toBe([['users'], ['orders', 'order_items']]);
+});

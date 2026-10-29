@@ -108,6 +108,23 @@ class DependencyResolver
     }
 
     /**
+     * The tables a run leaves out, for the run itself and for --dry-run alike:
+     * by flag (see excludedTables()) and, cascading from those, every
+     * configured table with a foreign key dependency on one of them.
+     *
+     * @param  list<string>  $tableNames  The configured tables
+     * @param  list<string>  $skipTables
+     * @param  list<string>  $onlyTables
+     * @return array{list<string>, list<string>} [by flag, by cascade]
+     */
+    public function exclusions(DatabaseSchemaData $schema, array $tableNames, array $skipTables, array $onlyTables): array
+    {
+        $byFlag = self::excludedTables($tableNames, $skipTables, $onlyTables);
+
+        return [$byFlag, $this->computeCascadeExclusions($schema, $byFlag, $tableNames)];
+    }
+
+    /**
      * Given excluded tables, find all tables that have FK dependency on them.
      * Returns the additional tables to exclude (cascade set, not including the original excluded tables).
      *

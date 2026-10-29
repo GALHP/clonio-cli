@@ -69,11 +69,8 @@ class CloningRunOrchestrator
         $start = microtime(true);
         $tableNames = array_map(static fn (TableCloningConfigData $t): string => $t->tableName, $config->tables);
 
-        // Compute excluded tables
-        $explicitlyExcluded = DependencyResolver::excludedTables($tableNames, $skipTables, $onlyTables);
-
-        // Compute cascade exclusions
-        $cascadeExclusions = $this->resolver->computeCascadeExclusions($sourceSchema, $explicitlyExcluded, $tableNames);
+        // Compute excluded tables, by flag and by cascade
+        [$explicitlyExcluded, $cascadeExclusions] = $this->resolver->exclusions($sourceSchema, $tableNames, $skipTables, $onlyTables);
 
         // Sort remaining tables
         $remaining = array_values(array_filter(
