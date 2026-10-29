@@ -93,14 +93,15 @@ configure a whole family of tables:
   case-insensitively. An ambiguous fallback matches nothing (*not found*).
 - When several entries match the same table, the more specific one wins,
   whatever the file order: an exact literal key beats a case-insensitive
-  literal match, which beats any regex. Among regex keys the last one wins for
-  `rows`, except that a regex `strategy: skip` can only be lifted by a literal
-  key, never by another regex. Tables in the top-level `skip:` list are always
-  skipped. Column rules merge per column across all matching entries in the
-  same order: an entry overrides only the columns it names, so no entry drops
-  another one's anonymization rule (`strategy: keep` lifts one explicitly).
-  Column rules of a regex key only apply to the matched tables that have the
-  column.
+  literal match, which beats any regex. Among regex keys the most restrictive
+  `rows` win (`skip` > `schema` > `first`/`last` with the smaller `limit` >
+  `full`, the last in file order on a tie): a regex can tighten but never loosen what another regex
+  sets; only a literal key loosens. Tables in the top-level `skip:` list are
+  always skipped. Column rules merge per column across all matching entries in
+  the same order: an entry overrides only the columns it names, so no entry
+  drops another one's anonymization rule. A literal `strategy: keep` lifts a
+  rule explicitly; a regex `keep` does not lift another regex's rule. Column
+  rules of a regex key only apply to the matched tables that have the column.
 - A literal key naming an absent source table is still reported *not found*,
   also with `strategy: skip`; a regex key or `skip:` entry that matches
   nothing prints a warning (also with `--ci`) and logs

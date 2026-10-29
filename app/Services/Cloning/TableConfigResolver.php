@@ -30,11 +30,12 @@ use RuntimeException;
  * reference in the config: table keys, the `skip:` list and the key remapping
  * tables and foreign keys. When several entries match the same table, a
  * literal key beats a regex whatever the YAML order (an exact name beats a
- * case-insensitive one); among equals the last one wins for `rows`, except that
- * only a literal key can lift a regex `skip`. Column rules merge per column in
- * the same order. The result is a config whose `tables` all carry concrete
- * table names, in YAML order, so the rest of the run (orchestrator, getTable(),
- * dependency sort, audit) keeps working against literal names.
+ * case-insensitive one; among equals the last one wins). Among regex keys the
+ * strictest `rows` win, and a regex `keep` cannot lift another regex's column
+ * rule: only a literal key loosens. Column rules merge per column in the same
+ * order. The result is a config whose `tables` all carry concrete table names,
+ * in YAML order, so the rest of the run (orchestrator, getTable(), dependency
+ * sort, audit) keeps working against literal names.
  */
 final readonly class TableConfigResolver
 {
@@ -178,10 +179,13 @@ final readonly class TableConfigResolver
     }
 
     /**
-     * The rows of the entry with the highest precedence; among entries of equal
-     * rank the last one in YAML order wins. A regex `skip` is the exception: no
-     * other regex can lift it, only a literal entry can, so a broad pattern
-     * further down never copies a table that a narrower pattern excluded.
+     * The rows of the entry with the highest precedence; among literal entries
+     * of equal rank the last one in YAML order wins. When only regex entries
+     * match, the strictest rows win (`skip`, then `schema`, then `first`/`last`
+     * with the smaller limit, then `full`; the last in YAML order on a tie): one
+     * pattern can tighten what another sets but never loosen it, so a broad
+     * pattern further down cannot copy data that a narrower one withheld. Only
+     * a literal entry loosens.
      *
      * @param  list<TableCloningConfigData>  $entries
      * @param  non-empty-list<array{int, int}>  $ranked  [rank, entry index] of the matching entries, in precedence order
@@ -190,21 +194,44 @@ final readonly class TableConfigResolver
     {
         [$rank, $index] = $ranked[count($ranked) - 1];
 
-        if ($rank === self::RANK_REGEX) {
-            foreach (array_reverse($ranked) as [, $candidate]) {
-                if ($entries[$candidate]->rows->strategy === 'skip') {
-                    return $entries[$candidate]->rows;
-                }
+        if ($rank !== self::RANK_REGEX) {
+            return $entries[$index]->rows;
+        }
+
+        $winner = $entries[$ranked[0][1]]->rows;
+
+        foreach ($ranked as [, $candidate]) {
+            $rows = $entries[$candidate]->rows;
+
+            if ($this->strictness($rows) >= $this->strictness($winner)) {
+                $winner = $rows;
             }
         }
 
-        return $entries[$index]->rows;
+        return $winner;
+    }
+
+    /**
+     * How much of a table's data a rows strategy withholds: `skip` and `schema`
+     * all of it (`skip` the table too), `first` / `last` more the smaller their
+     * limit (below any limit when they have none), `full` nothing.
+     */
+    private function strictness(TableRowConfigData $rows): int
+    {
+        return match ($rows->strategy) {
+            'skip' => 1, // @pest-mutate-ignore: IncrementInteger
+            'schema' => 0,
+            'first', 'last' => -($rows->limit ?? PHP_INT_MAX),
+            default => PHP_INT_MIN,
+        };
     }
 
     /**
      * The column rules of all entries matching a table, merged per column in
      * precedence order: an entry overrides only the columns it names, so e.g.
      * a catch-all regex cannot drop an anonymization rule of another entry.
+     * Like rows, a regex can tighten but not loosen: its `keep` does not lift
+     * the rule another regex sets for a column, only a literal entry's does.
      * A regex configures a whole family of tables, so its rules only reach the
      * tables that have the column; otherwise the audit would report columns as
      * anonymized that do not exist. Columns keep the order in which they are
@@ -221,9 +248,18 @@ final readonly class TableConfigResolver
 
         foreach ($ranked as [$rank, $index]) {
             foreach ($entries[$index]->columns as $column) {
-                if ($rank !== self::RANK_REGEX || in_array($column->columnName, $existing, true)) {
-                    $columns[$column->columnName] = $column;
+                $name = $column->columnName;
+
+                // Regex entries come first in precedence order, so a rule already
+                // merged when a regex entry is reached came from another regex.
+                if ($rank === self::RANK_REGEX && (
+                    ! in_array($name, $existing, true)
+                    || ($column->strategy === 'keep' && ($columns[$name]->strategy ?? 'keep') !== 'keep')
+                )) {
+                    continue;
                 }
+
+                $columns[$name] = $column;
             }
         }
 

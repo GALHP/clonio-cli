@@ -300,14 +300,33 @@ it('lets an exact literal key beat a case-insensitive one whatever their order',
     'insensitive first' => [['insensitive', 'exact']],
 ]);
 
-it('lets the last of several matching regex keys win', function (): void {
+it('lets the strictest of several matching regex keys win, whatever their order', function (array $first, array $second, string $strategy, ?int $limit): void {
+    foreach ([[$first, $second], [$second, $first]] as [$a, $b]) {
+        $resolved = (new TableConfigResolver)->resolve(
+            configWith([tableEntry('/^logs_/', ...$a), tableEntry('/_2025$/', ...$b)]),
+            schemaWith(['logs_2025']),
+        );
+
+        expect($resolved->getTable('logs_2025')?->rows)->toEqual(tableEntry('x', $strategy, $limit)->rows);
+    }
+})->with([
+    'schema over full' => [['schema'], ['full'], 'schema', null],
+    'a row limit over full' => [['last', 1], ['full'], 'last', 1],
+    'schema over a row limit' => [['schema'], ['first', 1], 'schema', null],
+    'skip over schema' => [['skip'], ['schema'], 'skip', null],
+    'the smaller row limit, first over last' => [['first', 10], ['last', 100000], 'first', 10],
+    'the smaller row limit, last over first' => [['last', 10], ['first', 100], 'last', 10],
+    'any row limit over none' => [['first', 100000], ['last'], 'first', 100000],
+]);
+
+it('lets the later of equally strict regex keys win', function (): void {
     $resolved = (new TableConfigResolver)->resolve(
-        configWith([tableEntry('/^logs_/', 'last', 1), tableEntry('/^logs_2/', 'full')]),
-        schemaWith(['logs_2025', 'logs_archive']),
+        configWith([tableEntry('/^logs_/', 'first', 10), tableEntry('/_2025$/', 'last', 10)]),
+        schemaWith(['logs_2025', 'logs_2026']),
     );
 
-    expect($resolved->getTable('logs_2025')?->rows->strategy)->toBe('full')
-        ->and($resolved->getTable('logs_archive')?->rows->strategy)->toBe('last');
+    expect($resolved->getTable('logs_2025')?->rows->strategy)->toBe('last')
+        ->and($resolved->getTable('logs_2026')?->rows->strategy)->toBe('first');
 });
 
 it('keeps a regex skip against any other regex, but not against a literal key', function (array $order): void {
@@ -456,6 +475,48 @@ it('merges column rules per column, a later entry overriding only the columns it
         columnRule('phone', 'keep'),
         columnRule('name', 'fake'),
     ]);
+});
+
+it('does not let a regex keep lift the column rule of another regex, whatever their order', function (array $order): void {
+    $entries = [
+        'crm' => new TableCloningConfigData('/^crm_/', new TableRowConfigData('full', null, null), [columnRule('email', 'fake'), columnRule('phone', 'keep')]),
+        'catch-all' => new TableCloningConfigData('/.*/', new TableRowConfigData('full', null, null), [columnRule('email', 'keep'), columnRule('phone', 'mask'), columnRule('note', 'keep')]),
+    ];
+
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith(array_map(static fn (string $key): TableCloningConfigData => $entries[$key], $order)),
+        schemaWith(['crm_contacts'], ['crm_contacts' => ['email', 'phone', 'note']]),
+    );
+
+    // A keep that tightens nothing still applies; an anonymizing rule replaces a keep.
+    expect($resolved->getTable('crm_contacts')?->columns)->toEqualCanonicalizing([columnRule('email', 'fake'), columnRule('phone', 'mask'), columnRule('note', 'keep')]);
+})->with([
+    'catch-all last' => [['crm', 'catch-all']],
+    'catch-all first' => [['catch-all', 'crm']],
+]);
+
+it('lets a literal keep lift the column rule of a regex', function (): void {
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([
+            new TableCloningConfigData('crm_contacts', new TableRowConfigData('full', null, null), [columnRule('email', 'keep')]),
+            new TableCloningConfigData('/^crm_/', new TableRowConfigData('full', null, null), [columnRule('email', 'fake')]),
+        ]),
+        schemaWith(['crm_contacts'], ['crm_contacts' => ['email']]),
+    );
+
+    expect($resolved->getTable('crm_contacts')?->columns)->toEqual([columnRule('email', 'keep')]);
+});
+
+it('lets the later of two anonymizing regex rules win', function (): void {
+    $resolved = (new TableConfigResolver)->resolve(
+        configWith([
+            new TableCloningConfigData('/^crm_/', new TableRowConfigData('full', null, null), [columnRule('email', 'fake')]),
+            new TableCloningConfigData('/.*/', new TableRowConfigData('full', null, null), [columnRule('email', 'hash')]),
+        ]),
+        schemaWith(['crm_contacts'], ['crm_contacts' => ['email']]),
+    );
+
+    expect($resolved->getTable('crm_contacts')?->columns)->toEqual([columnRule('email', 'hash')]);
 });
 
 it('applies the column rules of a regex key only to tables that have the column', function (): void {

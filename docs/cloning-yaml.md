@@ -147,11 +147,12 @@ tables:
 - **When several entries match the same table, the more specific one wins**,
   whatever their order in the file: a literal key naming the table exactly
   beats a literal key that matches it only case-insensitively, and both beat
-  any regex. Among regex keys the last one in the file wins for `rows`, with
-  one exception: a regex with `strategy: skip` can only be lifted by a literal
-  key, never by another regex, so a broad pattern cannot copy tables that a
-  narrower one excludes. Tables in the top-level `skip:` list are always
-  skipped.
+  any regex. Among regex keys the most restrictive `rows` win: `skip`, then
+  `schema`, then `first`/`last` (the smaller `limit` first), then `full`;
+  between equally restrictive ones the last in the file. A pattern can tighten what another one sets but never
+  loosen it, so a broad pattern cannot copy data that a narrower one withholds;
+  to loosen a regex for one table, add a literal key. Tables in the top-level
+  `skip:` list are always skipped.
 
   ```yaml
   tables:
@@ -168,7 +169,8 @@ tables:
   rules of the other entries still apply to all other columns, so no entry can
   drop an anonymization rule of another. The column rules of a regex only
   apply to the tables that have the column. To lift a rule, name the column
-  again with `strategy: keep`:
+  again with `strategy: keep` under a literal key; a regex `keep` does not
+  lift the rule of another regex:
 
   ```yaml
   tables:
@@ -183,10 +185,10 @@ tables:
   ```
 
 - A literal key that names a table **not** present in the source is still
-  reported as *not found*, also when it sets `strategy: skip`. A regex key, or a `skip:` entry, that matches no
-  table prints a warning (also with `--ci`) and logs a
-  `table_reference_unmatched` event, so a typo cannot silently leave tables
-  out or unskipped.
+  reported as *not found*, also when it sets `strategy: skip`. A regex key,
+  or a `skip:` entry, that matches no table prints a warning (also with
+  `--ci`) and logs a `table_reference_unmatched` event, so a typo cannot
+  silently leave tables out or unskipped.
 - Entries of the top-level `skip:` list can be regex too. Literal names there,
   and the table names in key remapping, resolve the same way as literal keys.
 - Tables keep the order in which the file first mentions them.
