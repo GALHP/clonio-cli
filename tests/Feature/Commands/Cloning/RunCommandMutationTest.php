@@ -298,6 +298,39 @@ it('rejects a regex in a table option before connecting', function (string $opti
         ->and($called)->toBeFalse();
 })->with(['--skip-tables', '--only-tables']);
 
+it('rejects a table option without a table name before connecting', function (string $option, string $value): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $called = false;
+    g1_bind(run: function () use (&$called): RunResultData {
+        $called = true;
+
+        return g1_result();
+    });
+
+    [$code, $out] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--ci' => true, $option => $value]);
+
+    expect($code)->toBe(4)
+        ->and($out)->toBe($option.": no table name given\n")
+        ->and($called)->toBeFalse();
+})->with(['--skip-tables', '--only-tables'])->with([',', ' , ']);
+
+it('keeps a table named 0 in a table option', function (string $option, int $index): void {
+    Storage::disk('local')->put('t.yaml', g1_yaml());
+    $args = null;
+    g1_bind(run: function (array $a) use (&$args) {
+        $args = $a;
+
+        return g1_result();
+    });
+
+    [$code] = g1_call(['file' => 't.yaml', '--target' => 'staging', '--ci' => true, $option => '0']);
+
+    expect($code)->toBe(0)->and($args[$index])->toBe(['0']);
+})->with([
+    'skip' => ['--skip-tables', 5],
+    'only' => ['--only-tables', 6],
+]);
+
 it('casts non-string table option values to strings', function (string $option, int $index): void {
     Storage::disk('local')->put('t.yaml', g1_yaml());
     $args = null;

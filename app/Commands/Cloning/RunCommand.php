@@ -193,18 +193,25 @@ class RunCommand extends Command
 
         /** @var list<string> $skipTables */
         $skipTables = ($skipTablesOpt !== null && $skipTablesOpt !== '') // @pest-mutate-ignore: BooleanAndToBooleanOr,EmptyStringToNotEmpty
-            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $skipTablesOpt)))) // @pest-mutate-ignore: UnwrapArrayValues
+            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $skipTablesOpt)), static fn (string $t): bool => $t !== '')) // @pest-mutate-ignore: UnwrapArrayValues
             : [];
 
         /** @var list<string> $onlyTables */
         $onlyTables = ($onlyTablesOpt !== null && $onlyTablesOpt !== '') // @pest-mutate-ignore: BooleanAndToBooleanOr,EmptyStringToNotEmpty
-            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $onlyTablesOpt)))) // @pest-mutate-ignore: UnwrapArrayValues
+            ? array_values(array_filter(array_map(trim(...), explode(',', (string) $onlyTablesOpt)), static fn (string $t): bool => $t !== '')) // @pest-mutate-ignore: UnwrapArrayValues
             : [];
 
         // Table options take table names only. A mistyped name excludes nothing
         // or, for --only-tables, everything; a regex that matches nothing would
-        // leave --only-tables empty and so clone every table.
-        foreach (['skip-tables' => $skipTables, 'only-tables' => $onlyTables] as $option => $references) {
+        // leave --only-tables empty and so clone every table. So would a value
+        // without any name, such as " , ".
+        foreach (['skip-tables' => [$skipTablesOpt, $skipTables], 'only-tables' => [$onlyTablesOpt, $onlyTables]] as $option => [$value, $references]) {
+            if ($references === [] && $value !== null && $value !== '') {
+                $this->error(sprintf('--%s: no table name given', $option));
+
+                return ExitCode::ValidationError->value;
+            }
+
             foreach ($references as $reference) {
                 if (TableConfigResolver::isRegex($reference)) {
                     $this->error(sprintf("--%s: '%s' is a regex; the option takes table names only, put regex in the YAML skip: list", $option, $reference));

@@ -482,7 +482,7 @@ Prints the run summary. Tables not found in the source are always listed, regard
 
 ### `--skip-tables` and `--only-tables`
 
-Both flags accept a comma-separated list of table names. Spaces around commas are trimmed. A name matches the table with exactly that name; only when no source table has it does it match the one table that differs in case only, like a literal key in the YAML (see [Matching table names with regex](../cloning-yaml.md#matching-table-names-with-regex)). A name that matches no source table prints a warning, also with `--ci`; with `--only-tables` such a typo then transfers nothing.
+Both flags accept a comma-separated list of table names. Spaces around commas are trimmed. A name matches the table with exactly that name; only when no source table has it does it match the one table that differs in case only, like a literal key in the YAML (see [Matching table names with regex](../cloning-yaml.md#matching-table-names-with-regex)). A name that matches no source table prints a warning, also with `--ci`; with `--only-tables` such a typo then transfers nothing. A value that holds no name at all, such as `--only-tables=,`, is a `ValidationError (4)`; an empty value (`--only-tables=`) counts as not given.
 
 ```bash
 # Skip two tables
@@ -636,7 +636,7 @@ Progress bars are suppressed when `--ci` is active regardless of verbosity level
 | `1` | Run failed — one or more tables had unrecoverable transfer errors |
 | `2` | Config error — `clonio.json` missing, or `APP_KEY` not set |
 | `3` | Connection error — source or target unreachable |
-| `4` | Validation error — YAML invalid, `--skip-tables` + `--only-tables` combined, or CI without `--target` |
+| `4` | Validation error — YAML invalid, `--skip-tables` + `--only-tables` combined, a regex or no table name in either flag, or CI without `--target` |
 | `5` | IO error — YAML file not found or not readable |
 
 ## Audit & Process Logs
